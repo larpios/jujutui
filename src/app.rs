@@ -1,5 +1,6 @@
 use crate::jj::Revision;
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemeKind};
+use crate::config::Config;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
@@ -10,6 +11,12 @@ pub enum Mode {
     Describe,
     RebaseTarget,
     CommandPalette,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub enum ActiveTab {
+    Log,
+    Status,
 }
 
 #[derive(PartialEq)]
@@ -23,6 +30,10 @@ pub struct App {
     pub revisions: Vec<Revision>,
     pub list_state: ListState,
     pub selected_revisions: HashSet<String>,
+    pub active_tab: ActiveTab,
+    pub status_files: Vec<crate::jj::StatusFile>,
+    pub status_list_state: ListState,
+    pub selected_files: HashSet<String>,
     pub status_message: String,
     pub status_is_error: bool,
     pub current_diff: String,
@@ -32,12 +43,17 @@ pub struct App {
     pub command_input: String,
     pub describe_input: String,
     pub rebase_source: Option<String>,
+    pub command_output: Option<String>,
     pub theme: Theme,
+    pub theme_kind: ThemeKind,
+    pub config: Config,
     pub show_help: bool,
 }
 
 impl App {
-    pub fn new(theme: Theme) -> Self {
+    pub fn new(theme_kind: ThemeKind, config: Config) -> Self {
+        let mut theme = theme_kind.theme();
+        theme.override_from_config(&config.colors);
         let revisions = crate::jj::get_log().unwrap_or_default();
         let mut list_state = ListState::default();
         let mut current_diff = String::new();
@@ -50,6 +66,10 @@ impl App {
             revisions,
             list_state,
             selected_revisions: HashSet::new(),
+            active_tab: ActiveTab::Log,
+            status_files: Vec::new(),
+            status_list_state: ListState::default(),
+            selected_files: HashSet::new(),
             status_message: "Ready  —  [?] help  [q] quit".to_string(),
             status_is_error: false,
             current_diff,
@@ -59,7 +79,10 @@ impl App {
             command_input: String::new(),
             describe_input: String::new(),
             rebase_source: None,
+            command_output: None,
             theme,
+            theme_kind,
+            config,
             show_help: false,
         }
     }
@@ -79,8 +102,25 @@ impl App {
             self.show_help = false;
             return;
         }
+        if self.command_output.is_some() {
+            self.command_output = None;
+            return;
+        }
+        if key == KeyCode::Tab {
+            self.active_tab = match self.active_tab {
+                ActiveTab::Log => ActiveTab::Status,
+                ActiveTab::Status => ActiveTab::Log,
+            };
+            if self.active_tab == ActiveTab::Status {
+                self.refresh_status();
+            }
+            return;
+        }
         match self.mode {
-            Mode::Normal => self.handle_normal(key, mods),
+            Mode::Normal => match self.active_tab {
+                ActiveTab::Log => self.handle_normal(key, mods),
+                ActiveTab::Status => self.handle_status(key, mods),
+            },
             Mode::CommandPalette => self.handle_command_palette(key),
             Mode::Describe => self.handle_describe(key),
             Mode::RebaseTarget => self.handle_rebase_target(key),
@@ -134,11 +174,13 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.next(),
             KeyCode::Char('k') | KeyCode::Up   => self.previous(),
             KeyCode::Char('l') => self.focus = Focus::Diff,
+            KeyCode::Enter => self.edit_revision(),
             KeyCode::Char('g') => self.go_to(0),
             KeyCode::Char('G') => { let last = self.revisions.len().saturating_sub(1); self.go_to(last); }
             KeyCode::Char(' ') | KeyCode::Char('v') => self.toggle_selection(),
             KeyCode::Char('a') => self.abandon_selected(),
             KeyCode::Char('s') => self.squash_selected(),
+            KeyCode::Char('S') => self.squash_cursor(),
             KeyCode::Char('n') => self.new_revision(),
             KeyCode::Char('e') => self.edit_revision(),
             KeyCode::Char('d') => self.start_describe(),
@@ -146,7 +188,83 @@ impl App {
             KeyCode::Char('r') => self.start_rebase(),
             KeyCode::Char('u') => self.undo(),
             KeyCode::Char('R') => { self.refresh_log(); self.ok("Log refreshed"); }
+            KeyCode::Char('T') => self.cycle_theme(),
             _ => {}
+        }
+    }
+
+    fn handle_status(&mut self, key: KeyCode, _mods: KeyModifiers) {
+        match key {
+            KeyCode::Char('j') | KeyCode::Down => {
+                let len = self.status_files.len();
+                if len == 0 { return; }
+                let i = self.status_list_state.selected()
+                    .map_or(0, |i| if i + 1 >= len { 0 } else { i + 1 });
+                self.status_list_state.select(Some(i));
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let len = self.status_files.len();
+                if len == 0 { return; }
+                let i = self.status_list_state.selected()
+                    .map_or(0, |i| if i == 0 { len - 1 } else { i - 1 });
+                self.status_list_state.select(Some(i));
+            }
+            KeyCode::Char(' ') | KeyCode::Char('v') => {
+                if let Some(i) = self.status_list_state.selected() {
+                    let path = self.status_files[i].path.clone();
+                    if self.selected_files.contains(&path) {
+                        self.selected_files.remove(&path);
+                    } else {
+                        self.selected_files.insert(path);
+                    }
+                }
+            }
+            KeyCode::Char('s') => self.squash_files(),
+            KeyCode::Char('R') => self.refresh_status(),
+            KeyCode::Esc => { self.selected_files.clear(); }
+            KeyCode::Char(':') => {
+                self.mode = Mode::CommandPalette;
+                self.command_input.clear();
+            }
+            KeyCode::Char('q') => self.should_quit = true,
+            _ => {}
+        }
+    }
+
+    fn refresh_status(&mut self) {
+        if let Some(rev) = self.current_rev() {
+            match crate::jj::get_status_files(&rev.change_id) {
+                Ok(files) => {
+                    self.status_files = files;
+                    if self.status_list_state.selected().is_none() && !self.status_files.is_empty() {
+                        self.status_list_state.select(Some(0));
+                    }
+                }
+                Err(e) => self.err(e.to_string()),
+            }
+        }
+    }
+
+    fn squash_files(&mut self) {
+        let files: Vec<String> = self.selected_files.iter().cloned().collect();
+        if files.is_empty() { self.err("Select files with Space first"); return; }
+        
+        let Some(rev) = self.current_rev() else { return };
+        // jj squash -r <rev> <files...>
+        let mut cmd = format!("squash -r {}", rev.change_id);
+        for f in files {
+            cmd.push_str(" ");
+            cmd.push_str(&f);
+        }
+        
+        match crate::jj::run_command(&cmd) {
+            Ok(out) => {
+                self.ok("Partial squash completed");
+                self.command_output = Some(out);
+                self.refresh_log();
+                self.refresh_status();
+            }
+            Err(e) => self.err(e.to_string()),
         }
     }
 
@@ -233,7 +351,15 @@ impl App {
             "undo"      | "u" => self.undo(),
             "refresh"   | "r" => { self.refresh_log(); self.ok("Log refreshed"); }
             "q" | "quit"      => self.should_quit = true,
-            _                 => self.err(format!("Unknown command: {cmd}")),
+            _                 => {
+                match crate::jj::run_command(cmd) {
+                    Ok(out) => {
+                        self.command_output = Some(out);
+                        self.refresh_log();
+                    }
+                    Err(e) => self.err(e.to_string()),
+                }
+            }
         }
     }
 
@@ -338,6 +464,15 @@ impl App {
         self.refresh_log();
     }
 
+    fn squash_cursor(&mut self) {
+        let Some(id) = self.current_rev().map(|r| r.change_id.clone()) else { return };
+        match crate::jj::squash(&[id]) {
+            Ok(_) => self.ok("Squashed current revision into parent"),
+            Err(e) => self.err(e.to_string()),
+        }
+        self.refresh_log();
+    }
+
     fn new_revision(&mut self) {
         let Some(id) = self.current_rev().map(|r| r.change_id.clone()) else { return };
         match crate::jj::new_revision(&id) {
@@ -392,5 +527,15 @@ impl App {
             Ok(_) => { self.refresh_log(); self.ok("Undid last operation"); }
             Err(e) => self.err(e.to_string()),
         }
+    }
+
+    fn cycle_theme(&mut self) {
+        let all = ThemeKind::ALL;
+        let current = all.iter().position(|k| *k == self.theme_kind).unwrap_or(0);
+        let next = all[(current + 1) % all.len()];
+        self.theme_kind = next;
+        self.theme = next.theme();
+        self.theme.override_from_config(&self.config.colors);
+        self.ok(format!("Theme: {}", self.theme.name));
     }
 }

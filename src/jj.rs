@@ -13,9 +13,15 @@ pub struct Revision {
     pub has_conflict: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct StatusFile {
+    pub path: String,
+    pub status: String,
+}
+
 pub fn get_log() -> Result<Vec<Revision>> {
-    // Description is last so splitn(8) captures | chars inside it
-    let template = r#"if(current_working_copy, "@", " ") ++ "|" ++ change_id.short() ++ "|" ++ commit_id.short() ++ "|" ++ author.name() ++ "|" ++ if(immutable, "1", "0") ++ "|" ++ if(empty, "1", "0") ++ "|" ++ if(conflict, "1", "0") ++ "|" ++ description.first_line() ++ "\n""#;
+    // Use \x1e (record separator) to handle multiline descriptions
+    let template = r#"if(current_working_copy, "@", " ") ++ "|" ++ change_id.short() ++ "|" ++ commit_id.short() ++ "|" ++ author.name() ++ "|" ++ if(immutable, "1", "0") ++ "|" ++ if(empty, "1", "0") ++ "|" ++ if(conflict, "1", "0") ++ "|" ++ description ++ "\x1e""#;
 
     let out = Command::new("jj")
         .args(["log", "-r", "all()", "-T", template, "--no-graph"])
@@ -28,9 +34,11 @@ pub fn get_log() -> Result<Vec<Revision>> {
         ));
     }
 
+    let stdout = String::from_utf8_lossy(&out.stdout);
     let mut revisions = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let parts: Vec<&str> = line.splitn(8, '|').collect();
+    for record in stdout.split('\x1e') {
+        if record.trim().is_empty() { continue; }
+        let parts: Vec<&str> = record.splitn(8, '|').collect();
         if parts.len() >= 8 {
             revisions.push(Revision {
                 is_working_copy: parts[0].trim() == "@",
@@ -65,15 +73,10 @@ pub fn abandon(revision: &str) -> Result<()> {
 }
 
 pub fn squash(revisions: &[String]) -> Result<()> {
-    if revisions.is_empty() {
-        return Ok(());
-    }
-    let mut cmd = Command::new("jj");
-    cmd.arg("squash");
     for rev in revisions {
-        cmd.args(["-r", rev]);
+        check(Command::new("jj").args(["squash", "-r", rev]).output()?, "squash")?;
     }
-    check(cmd.output()?, "squash")
+    Ok(())
 }
 
 pub fn new_revision(parent: &str) -> Result<()> {
@@ -108,6 +111,46 @@ pub fn rebase(source: &str, destination: &str) -> Result<()> {
             .output()?,
         "rebase",
     )
+}
+
+pub fn run_command(cmd: &str) -> Result<String> {
+    let args: Vec<&str> = if cmd.starts_with("jj ") {
+        cmd[3..].split_whitespace().collect()
+    } else {
+        cmd.split_whitespace().collect()
+    };
+    
+    let out = Command::new("jj").args(args).output()?;
+    let mut combined = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() {
+        combined.push_str("\n--- ERRORS ---\n");
+        combined.push_str(&String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(combined)
+}
+
+pub fn get_status_files(revision: &str) -> Result<Vec<StatusFile>> {
+    let out = Command::new("jj")
+        .args(["diff", "--summary", "-r", revision])
+        .output()?;
+    if !out.status.success() {
+        return Err(anyhow::anyhow!(
+            "jj diff --summary failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut files = Vec::new();
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            files.push(StatusFile {
+                status: parts[0].to_string(),
+                path: parts[1..].join(" "),
+            });
+        }
+    }
+    Ok(files)
 }
 
 fn check(out: Output, op: &str) -> Result<()> {

@@ -4,6 +4,7 @@ use ratatui::style::Color;
 #[allow(dead_code)]
 pub struct Theme {
     pub name: &'static str,
+    pub bg: Color,
     pub working_copy: Color,
     pub immutable: Color,
     pub conflict: Color,
@@ -23,6 +24,38 @@ pub struct Theme {
     pub help_section: Color,
 }
 
+impl Theme {
+    pub fn override_from_config(&mut self, colors: &std::collections::HashMap<String, String>) {
+        if let Some(c) = colors.get("bg").and_then(|s| parse_hex(s)) { self.bg = c; }
+        if let Some(c) = colors.get("working_copy").and_then(|s| parse_hex(s)) { self.working_copy = c; }
+        if let Some(c) = colors.get("immutable").and_then(|s| parse_hex(s)) { self.immutable = c; }
+        if let Some(c) = colors.get("conflict").and_then(|s| parse_hex(s)) { self.conflict = c; }
+        if let Some(c) = colors.get("empty").and_then(|s| parse_hex(s)) { self.empty = c; }
+        if let Some(c) = colors.get("selected").and_then(|s| parse_hex(s)) { self.selected = c; }
+        if let Some(c) = colors.get("rebase_src").and_then(|s| parse_hex(s)) { self.rebase_src = c; }
+        if let Some(c) = colors.get("change_id").and_then(|s| parse_hex(s)) { self.change_id = c; }
+        if let Some(c) = colors.get("author").and_then(|s| parse_hex(s)) { self.author = c; }
+        if let Some(c) = colors.get("desc").and_then(|s| parse_hex(s)) { self.desc = c; }
+        if let Some(c) = colors.get("border_focused").and_then(|s| parse_hex(s)) { self.border_focused = c; }
+        if let Some(c) = colors.get("border_unfocused").and_then(|s| parse_hex(s)) { self.border_unfocused = c; }
+        if let Some(c) = colors.get("status_ok").and_then(|s| parse_hex(s)) { self.status_ok = c; }
+        if let Some(c) = colors.get("status_err").and_then(|s| parse_hex(s)) { self.status_err = c; }
+        if let Some(c) = colors.get("header_bg").and_then(|s| parse_hex(s)) { self.header_bg = c; }
+        if let Some(c) = colors.get("header_fg").and_then(|s| parse_hex(s)) { self.header_fg = c; }
+        if let Some(c) = colors.get("help_key").and_then(|s| parse_hex(s)) { self.help_key = c; }
+        if let Some(c) = colors.get("help_section").and_then(|s| parse_hex(s)) { self.help_section = c; }
+    }
+}
+
+fn parse_hex(s: &str) -> Option<Color> {
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 { return None; }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some(Color::Rgb(r, g, b))
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum ThemeKind {
     CatppuccinMocha,
@@ -36,7 +69,7 @@ pub enum ThemeKind {
 }
 
 impl ThemeKind {
-    const ALL: &'static [ThemeKind] = &[
+    pub const ALL: &'static [ThemeKind] = &[
         ThemeKind::CatppuccinMocha,
         ThemeKind::CatppuccinLatte,
         ThemeKind::TokyoNight,
@@ -89,6 +122,7 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
 fn catppuccin_mocha() -> Theme {
     Theme {
         name: "Catppuccin Mocha",
+        bg:               rgb(30,  30,  46),  // Base
         working_copy:     rgb(148, 226, 213), // Teal
         immutable:        rgb(127, 132, 156), // Overlay1
         conflict:         rgb(243, 139, 168), // Red
@@ -112,6 +146,7 @@ fn catppuccin_mocha() -> Theme {
 fn catppuccin_latte() -> Theme {
     Theme {
         name: "Catppuccin Latte",
+        bg:               rgb(239, 241, 245), // Base
         working_copy:     rgb(23,  146, 153), // Teal
         immutable:        rgb(156, 160, 176), // Overlay1
         conflict:         rgb(210, 15,  57),  // Red
@@ -135,6 +170,7 @@ fn catppuccin_latte() -> Theme {
 fn tokyo_night() -> Theme {
     Theme {
         name: "Tokyo Night",
+        bg:               rgb(26,  27,  38),
         working_copy:     rgb(115, 218, 202), // teal
         immutable:        rgb(86,  95,  137), // comment
         conflict:         rgb(247, 118, 142), // red
@@ -158,6 +194,7 @@ fn tokyo_night() -> Theme {
 fn dracula() -> Theme {
     Theme {
         name: "Dracula",
+        bg:               rgb(40,  42,  54),
         working_copy:     rgb(80,  250, 123), // green
         immutable:        rgb(98,  114, 164), // comment
         conflict:         rgb(255, 85,  85),  // red
@@ -181,6 +218,7 @@ fn dracula() -> Theme {
 fn gruvbox_dark() -> Theme {
     Theme {
         name: "Gruvbox Dark",
+        bg:               rgb(40,  40,  40),
         working_copy:     rgb(142, 192, 124), // green
         immutable:        rgb(146, 131, 116), // gray
         conflict:         rgb(251, 73,  52),  // red
@@ -204,6 +242,7 @@ fn gruvbox_dark() -> Theme {
 fn nord() -> Theme {
     Theme {
         name: "Nord",
+        bg:               rgb(46,  52,  64),
         working_copy:     rgb(143, 188, 187), // nord7
         immutable:        rgb(76,  86,  106), // nord3
         conflict:         rgb(191, 97,  106), // nord11
@@ -227,6 +266,7 @@ fn nord() -> Theme {
 fn one_dark() -> Theme {
     Theme {
         name: "One Dark",
+        bg:               rgb(40,  44,  52),
         working_copy:     rgb(86,  182, 194), // cyan
         immutable:        rgb(92,  99,  112), // comment
         conflict:         rgb(224, 108, 117), // red
@@ -250,6 +290,7 @@ fn one_dark() -> Theme {
 fn solarized_dark() -> Theme {
     Theme {
         name: "Solarized Dark",
+        bg:               rgb(0,   43,  54),
         working_copy:     rgb(42,  161, 152), // cyan
         immutable:        rgb(88,  110, 117), // base01
         conflict:         rgb(220, 50,  47),  // red

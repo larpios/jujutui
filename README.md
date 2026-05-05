@@ -1,8 +1,8 @@
-# jutui (Jujutsu TUI)
+# jujutui (Jujutsu TUI)
 
 A Rust-based Terminal User Interface for the [Jujutsu (jj)](https://github.com/martinvonz/jj) version control system.
 
-`jutui` is designed to provide a smooth, visual experience for managing your `jj` workflow, inspired by tools like `lazygit` and `jujutsu.nvim`.
+`jujutui` is designed to provide a smooth, visual experience for managing your `jj` workflow, inspired by tools like `lazygit` and `jujutsu.nvim`.
 
 ## Features
 
@@ -24,15 +24,15 @@ A Rust-based Terminal User Interface for the [Jujutsu (jj)](https://github.com/m
 ### Building from source
 
 ```bash
-cargo install --git https://github.com/larpios/jutui
+cargo install --git https://github.com/larpios/jujutui
 ```
 
 ## Usage
 
-Run `jutui` within any directory managed by Jujutsu:
+Run `jujutui` within any directory managed by Jujutsu:
 
 ```bash
-jutui
+jujutui
 ```
 
 Press `?` at any time to open the keybinding reference.
@@ -103,13 +103,13 @@ Press `:` to open the palette. Accepted commands:
 
 ## Configuration
 
-jutui reads its configuration from:
+jujutui reads its configuration from:
 
 ```
-~/.config/jutui/config.toml
+~/.config/jujutui/config.toml
 ```
 
-(`$XDG_CONFIG_HOME/jutui/config.toml` if `XDG_CONFIG_HOME` is set.)
+(`$XDG_CONFIG_HOME/jujutui/config.toml` if `XDG_CONFIG_HOME` is set.)
 
 The file is created automatically on first run if it does not exist.
 
@@ -135,7 +135,7 @@ Example — switching to Tokyo Night:
 theme = "tokyo-night"
 ```
 
-Restart `jutui` after editing the config for changes to take effect.
+Restart `jujutui` after editing the config for changes to take effect.
 
 ---
 

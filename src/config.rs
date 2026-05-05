@@ -1,14 +1,23 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default = "default_theme_slug")]
     pub theme: String,
+    #[serde(default = "default_transparent")]
+    pub transparent_background: bool,
+    #[serde(default)]
+    pub colors: HashMap<String, String>,
 }
 
 fn default_theme_slug() -> String {
     "catppuccin-mocha".to_string()
+}
+
+fn default_transparent() -> bool {
+    false
 }
 
 pub fn config_path() -> PathBuf {
@@ -18,7 +27,7 @@ pub fn config_path() -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             PathBuf::from(home).join(".config")
         });
-    base.join("jutui").join("config.toml")
+    base.join("jujutui").join("config.toml")
 }
 
 pub fn load_config() -> Config {

@@ -15,7 +15,7 @@ use std::io;
 
 fn main() -> Result<()> {
     let cfg = config::load_config();
-    let theme = theme::ThemeKind::from_slug(&cfg.theme).theme();
+    let theme_kind = theme::ThemeKind::from_slug(&cfg.theme);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = app::App::new(theme);
+    let mut app = app::App::new(theme_kind, cfg);
     let res = run_app(&mut terminal, &mut app);
 
     disable_raw_mode()?;
