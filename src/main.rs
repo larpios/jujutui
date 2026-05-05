@@ -24,6 +24,7 @@ use std::path::PathBuf;
 // ── Theme ──────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct Theme {
     name: &'static str,
     working_copy: Color,
@@ -68,11 +69,6 @@ impl ThemeKind {
         ThemeKind::OneDark,
         ThemeKind::SolarizedDark,
     ];
-
-    fn next(self) -> ThemeKind {
-        let pos = Self::ALL.iter().position(|t| *t == self).unwrap_or(0);
-        Self::ALL[(pos + 1) % Self::ALL.len()]
-    }
 
     fn slug(self) -> &'static str {
         match self {
@@ -328,15 +324,6 @@ fn load_config() -> Config {
     toml::from_str(&text).unwrap_or_default()
 }
 
-fn save_config(config: &Config) {
-    let path = config_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(text) = toml::to_string(config) {
-        let _ = std::fs::write(&path, text);
-    }
-}
 
 // ── App state ──────────────────────────────────────────────────────────────────
 
@@ -369,7 +356,6 @@ struct App {
     describe_input: String,
     rebase_source: Option<String>,
     theme: Theme,
-    theme_kind: ThemeKind,
     show_help: bool,
 }
 
@@ -387,7 +373,7 @@ impl App {
             revisions,
             list_state,
             selected_revisions: HashSet::new(),
-            status_message: "Ready  —  [?] help  [t] cycle theme  [q] quit".to_string(),
+            status_message: "Ready  —  [?] help  [q] quit".to_string(),
             status_is_error: false,
             current_diff,
             diff_scroll: 0,
@@ -397,7 +383,6 @@ impl App {
             describe_input: String::new(),
             rebase_source: None,
             theme: theme_kind.theme(),
-            theme_kind,
             show_help: false,
         }
     }
@@ -410,13 +395,6 @@ impl App {
     fn err(&mut self, msg: impl Into<String>) {
         self.status_message = msg.into();
         self.status_is_error = true;
-    }
-
-    fn cycle_theme(&mut self) {
-        self.theme_kind = self.theme_kind.next();
-        self.theme = self.theme_kind.theme();
-        self.ok(format!("Theme: {}", self.theme.name));
-        save_config(&Config { theme: self.theme_kind.slug().to_string() });
     }
 
     fn on_key(&mut self, key: KeyCode, mods: KeyModifiers) {
@@ -435,12 +413,8 @@ impl App {
     }
 
     fn handle_normal(&mut self, key: KeyCode, mods: KeyModifiers) {
-        // Global keys
+        // Global keys (always active)
         match key {
-            KeyCode::Tab => {
-                self.focus = if self.focus == Focus::Log { Focus::Diff } else { Focus::Log };
-                return;
-            }
             KeyCode::Char('q') => { self.should_quit = true; return; }
             KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => {
                 self.should_quit = true;
@@ -457,8 +431,7 @@ impl App {
                 self.ok("Selection cleared");
                 return;
             }
-            KeyCode::Char('t') => { self.cycle_theme(); return; }
-            // Ctrl+D / Ctrl+U always scroll diff
+            // Ctrl+D / Ctrl+U always scroll diff regardless of focus
             KeyCode::Char('d') if mods.contains(KeyModifiers::CONTROL) => {
                 self.diff_scroll = self.diff_scroll.saturating_add(20);
                 return;
@@ -470,9 +443,10 @@ impl App {
             _ => {}
         }
 
-        // Diff pane focused
+        // Diff pane focused — j/k scroll, h returns to log
         if self.focus == Focus::Diff {
             match key {
+                KeyCode::Char('h') => { self.focus = Focus::Log; }
                 KeyCode::Char('j') | KeyCode::Down => self.diff_scroll = self.diff_scroll.saturating_add(3),
                 KeyCode::Char('k') | KeyCode::Up => self.diff_scroll = self.diff_scroll.saturating_sub(3),
                 _ => {}
@@ -484,6 +458,7 @@ impl App {
         match key {
             KeyCode::Char('j') | KeyCode::Down => self.next(),
             KeyCode::Char('k') | KeyCode::Up => self.previous(),
+            KeyCode::Char('l') => { self.focus = Focus::Diff; }
             KeyCode::Char('g') => self.go_to(0),
             KeyCode::Char('G') => { let last = self.revisions.len().saturating_sub(1); self.go_to(last); }
             KeyCode::Char(' ') | KeyCode::Char('v') => self.toggle_selection(),
@@ -923,9 +898,9 @@ fn render_help_bar(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let text = match app.mode {
         Mode::Normal if app.focus == Focus::Diff => {
-            " [?] help  [j/k] scroll  [Ctrl+D/U] page  [Tab] switch to log"
+            " [?] help  [j/k] scroll  [Ctrl+D/U] page  [h] back to log"
         }
-        Mode::Normal => " [?] help  [:] commands  [t] theme  [Tab] diff  [q] quit",
+        Mode::Normal => " [?] help  [:] commands  [l] diff  [q] quit",
         Mode::CommandPalette => " [Enter] execute  [Esc] cancel",
         Mode::Describe => " [Enter] confirm  [Esc] cancel",
         Mode::RebaseTarget => " [j/k] choose destination  [Enter] rebase here  [Esc] cancel",
@@ -999,7 +974,7 @@ fn render_help_overlay(f: &mut Frame, app: &App) {
         ]),
         row("j / k",      "move up / down",      "n",  "new revision"),
         row("g / G",      "top / bottom",         "e",  "edit (set working copy)"),
-        row("Tab",        "switch pane",           "d",  "describe commit"),
+        row("l",          "focus diff pane",       "d",  "describe commit"),
         row("Space / v",  "toggle select",         "a",  "abandon"),
         row("Esc",        "clear selection",       "s",  "squash selected"),
         row("",           "",                      "D",  "duplicate"),
@@ -1014,15 +989,14 @@ fn render_help_overlay(f: &mut Frame, app: &App) {
         row("j / k",      "scroll 3 lines",        "u",  "undo last operation"),
         row("Ctrl+D",     "page down",             "R",  "refresh log"),
         row("Ctrl+U",     "page up",               ":",  "command palette"),
-        row("",           "",                      "t",  "cycle theme"),
-        row("",           "",                      "?",  "toggle this help"),
+        row("h",          "back to log pane",       "?",  "toggle this help"),
         row("",           "",                      "q",  "quit"),
         blank.clone(),
         Line::from(vec![
             Span::raw("  "),
             Span::styled("Theme: ", Style::default().fg(t.immutable)),
             Span::styled(app.theme.name, Style::default().fg(t.help_key).add_modifier(Modifier::BOLD)),
-            Span::styled("  (press t to cycle through 8 themes)", Style::default().fg(t.immutable)),
+            Span::styled("  (set via ~/.config/jutui/config.toml)", Style::default().fg(t.immutable)),
         ]),
         blank.clone(),
         Line::from(vec![
