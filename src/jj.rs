@@ -37,7 +37,9 @@ pub fn get_log() -> Result<Vec<Revision>> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut revisions = Vec::new();
     for record in stdout.split('\x1e') {
-        if record.trim().is_empty() { continue; }
+        if record.trim().is_empty() {
+            continue;
+        }
         let parts: Vec<&str> = record.splitn(8, '|').collect();
         if parts.len() >= 8 {
             revisions.push(Revision {
@@ -68,15 +70,36 @@ pub fn get_diff(revision: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-pub fn abandon(revision: &str) -> Result<()> {
-    check(Command::new("jj").args(["abandon", "-r", revision]).output()?, "abandon")
+pub fn abandon(revision: &str, ignore_immutable: bool) -> Result<()> {
+    let mut cmd = Command::new("jj");
+    cmd.args(["abandon", "-r", revision]);
+    if ignore_immutable {
+        cmd.arg("--ignore-immutable");
+    }
+    check(cmd.output()?, "abandon")
 }
 
-pub fn squash(revisions: &[String]) -> Result<()> {
+pub fn squash(
+    revisions: &[String],
+    target: Option<&str>,
+    files: &[String],
+    ignore_immutable: bool,
+) -> Result<()> {
+    let mut cmd = Command::new("jj");
+    cmd.arg("squash");
     for rev in revisions {
-        check(Command::new("jj").args(["squash", "-r", rev]).output()?, "squash")?;
+        cmd.args(["-r", rev]);
     }
-    Ok(())
+    if let Some(t) = target {
+        cmd.args(["--into", t]);
+    }
+    if ignore_immutable {
+        cmd.arg("--ignore-immutable");
+    }
+    for f in files {
+        cmd.arg(f);
+    }
+    check(cmd.output()?, "squash")
 }
 
 pub fn new_revision(parent: &str) -> Result<()> {
@@ -84,16 +107,19 @@ pub fn new_revision(parent: &str) -> Result<()> {
 }
 
 pub fn edit_revision(revision: &str) -> Result<()> {
-    check(Command::new("jj").args(["edit", "-r", revision]).output()?, "edit")
+    check(
+        Command::new("jj").args(["edit", "-r", revision]).output()?,
+        "edit",
+    )
 }
 
-pub fn describe(revision: &str, message: &str) -> Result<()> {
-    check(
-        Command::new("jj")
-            .args(["describe", "-r", revision, "-m", message])
-            .output()?,
-        "describe",
-    )
+pub fn describe(revision: &str, message: &str, ignore_immutable: bool) -> Result<()> {
+    let mut cmd = Command::new("jj");
+    cmd.args(["describe", "-r", revision, "-m", message]);
+    if ignore_immutable {
+        cmd.arg("--ignore-immutable");
+    }
+    check(cmd.output()?, "describe")
 }
 
 pub fn undo() -> Result<()> {
@@ -101,30 +127,88 @@ pub fn undo() -> Result<()> {
 }
 
 pub fn duplicate(revision: &str) -> Result<()> {
-    check(Command::new("jj").args(["duplicate", revision]).output()?, "duplicate")
-}
-
-pub fn rebase(source: &str, destination: &str) -> Result<()> {
     check(
-        Command::new("jj")
-            .args(["rebase", "-r", source, "-d", destination])
-            .output()?,
-        "rebase",
+        Command::new("jj").args(["duplicate", revision]).output()?,
+        "duplicate",
     )
 }
 
-pub fn run_command(cmd: &str) -> Result<String> {
-    let args: Vec<&str> = if cmd.starts_with("jj ") {
-        cmd[3..].split_whitespace().collect()
+pub fn rebase(source: &str, destination: &str, ignore_immutable: bool) -> Result<()> {
+    let mut cmd = Command::new("jj");
+    cmd.args(["rebase", "-r", source, "-d", destination]);
+    if ignore_immutable {
+        cmd.arg("--ignore-immutable");
+    }
+    check(cmd.output()?, "rebase")
+}
+
+pub fn restore(files: &[String], revision: Option<&str>) -> Result<()> {
+    let mut cmd = Command::new("jj");
+    cmd.arg("restore");
+    if let Some(r) = revision {
+        cmd.args(["-r", r]);
+    }
+    for f in files {
+        cmd.arg(f);
+    }
+    check(cmd.output()?, "restore")
+}
+
+pub fn git_fetch() -> Result<String> {
+    run_command("git fetch")
+}
+
+pub fn git_push() -> Result<String> {
+    run_command("git push")
+}
+
+pub fn absorb(ignore_immutable: bool) -> Result<String> {
+    let mut cmd = Command::new("jj");
+    cmd.arg("absorb");
+    if ignore_immutable {
+        cmd.arg("--ignore-immutable");
+    }
+    let out = cmd.output()?;
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if out.status.success() {
+        Ok(combined)
     } else {
-        cmd.split_whitespace().collect()
-    };
-    
+        Err(anyhow::anyhow!("absorb failed: {}", combined))
+    }
+}
+
+pub fn run_interactive(args: &[&str]) -> Result<()> {
+    let mut cmd = Command::new("jj");
+    cmd.args(args);
+    let mut child = cmd.spawn()?;
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("jj command failed with status: {}", status))
+    }
+}
+
+pub fn run_command(cmd: &str) -> Result<String> {
+    let args: Vec<&str> = cmd
+        .strip_prefix("jj ")
+        .unwrap_or(cmd)
+        .split_whitespace()
+        .collect();
+
     let out = Command::new("jj").args(args).output()?;
     let mut combined = String::from_utf8_lossy(&out.stdout).to_string();
-    if !out.status.success() {
-        combined.push_str("\n--- ERRORS ---\n");
-        combined.push_str(&String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !stderr.is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str("--- STDERR ---\n");
+        combined.push_str(&stderr);
     }
     Ok(combined)
 }

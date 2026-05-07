@@ -8,6 +8,8 @@ pub struct Config {
     pub theme: String,
     #[serde(default = "default_transparent")]
     pub transparent_background: bool,
+    #[serde(default = "default_warn_on_immutable")]
+    pub warn_on_immutable: bool,
     #[serde(default)]
     pub colors: HashMap<String, String>,
 }
@@ -18,6 +20,10 @@ fn default_theme_slug() -> String {
 
 fn default_transparent() -> bool {
     false
+}
+
+fn default_warn_on_immutable() -> bool {
+    true
 }
 
 pub fn config_path() -> PathBuf {

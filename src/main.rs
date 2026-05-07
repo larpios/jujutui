@@ -8,9 +8,12 @@ use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::{Backend, CrosstermBackend}, Terminal};
+use ratatui::{
+    Terminal,
+    backend::{Backend, CrosstermBackend},
+};
 use std::io;
 
 fn main() -> Result<()> {
@@ -30,23 +33,45 @@ fn main() -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    if let Err(e) = res { eprintln!("{e:?}"); }
+    if let Err(e) = res {
+        eprintln!("{e:?}");
+    }
     Ok(())
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut app::App) -> Result<()>
+fn run_app<B: Backend + std::io::Write>(
+    terminal: &mut Terminal<B>,
+    app: &mut app::App,
+) -> Result<()>
 where
     <B as Backend>::Error: Send + Sync + 'static,
 {
     loop {
         terminal.draw(|f| ui::ui(f, app))?;
-        if app.should_quit { break; }
-        if event::poll(std::time::Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.on_key(key.code, key.modifiers);
-                }
+        if app.should_quit {
+            break;
+        }
+
+        if let Some(args) = app.pending_interactive_command.take() {
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            disable_raw_mode()?;
+            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+            let res = jj::run_interactive(&args_ref);
+            enable_raw_mode()?;
+            execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+            terminal.clear()?;
+            if let Err(e) = res {
+                app.err(format!("Interactive command failed: {e}"));
+            } else {
+                app.ok("Interactive command completed");
             }
+        }
+
+        if event::poll(std::time::Duration::from_millis(16))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            app.on_key(key.code, key.modifiers);
         }
     }
     Ok(())
