@@ -12,15 +12,45 @@ pub enum Mode {
     RebaseTarget,
     CommandPalette,
     SquashTarget,
+    BookmarkMenu(usize),
+    BookmarkList {
+        action: BookmarkAction,
+        state: ListState,
+        bookmarks: Vec<String>,
+    },
+    BookmarkPrompt {
+        action: BookmarkAction,
+        input: String,
+        target_bookmark: Option<String>,
+    },
     Confirm(PendingAction),
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum BookmarkAction {
+    Create,
+    Delete,
+    Rename,
+    Move,
+}
+
+impl BookmarkAction {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Create => "create",
+            Self::Delete => "delete",
+            Self::Rename => "rename",
+            Self::Move => "move",
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
 pub enum PendingAction {
     Abandon(Vec<String>),
     Squash {
         revisions: Vec<String>,
-        target: String,
+        target: Option<String>,
         files: Vec<String>,
     },
     Describe {
@@ -84,6 +114,9 @@ pub struct App {
     pub config: Config,
     pub show_help: bool,
     pub pending_interactive_command: Option<Vec<String>>,
+    pub squash_source: Option<(Vec<String>, Vec<String>)>,
+    #[cfg(test)]
+    pub last_action: Option<PendingAction>,
 }
 
 impl App {
@@ -121,6 +154,9 @@ impl App {
             config,
             show_help: false,
             pending_interactive_command: None,
+            squash_source: None,
+            #[cfg(test)]
+            last_action: None,
         }
     }
 
@@ -162,6 +198,9 @@ impl App {
             Mode::Describe => self.handle_describe(key),
             Mode::RebaseTarget => self.handle_rebase_target(key),
             Mode::SquashTarget => self.handle_squash_target(key),
+            Mode::BookmarkMenu(_) => self.handle_bookmark_menu(key),
+            Mode::BookmarkList { .. } => self.handle_bookmark_list(key),
+            Mode::BookmarkPrompt { .. } => self.handle_bookmark_prompt(key),
             Mode::Confirm(_) => self.handle_confirm(key),
         }
     }
@@ -239,7 +278,7 @@ impl App {
                 let args = crate::jj::split_args(&id);
                 self.run_interactive(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
             }
-            KeyCode::Char('s') => self.squash_selected(),
+            KeyCode::Char('s') => self.start_squash_selected_to_target(),
             KeyCode::Char('S') => self.squash_cursor(),
             KeyCode::Char('n') => self.new_revision(),
             KeyCode::Char('e') => self.edit_revision(),
@@ -250,6 +289,9 @@ impl App {
             KeyCode::Char('R') => {
                 self.refresh_log();
                 self.ok("Log refreshed");
+            }
+            KeyCode::Char('b') => {
+                self.mode = Mode::BookmarkMenu(0);
             }
             KeyCode::Char('T') => self.cycle_theme(),
             KeyCode::Char('f') => self.git_sync(true),
@@ -336,6 +378,21 @@ impl App {
         self.perform_or_confirm(PendingAction::DiscardFiles(files));
     }
 
+    fn start_squash_selected_to_target(&mut self) {
+        let ids: Vec<String> = if self.selected_revisions.is_empty() {
+            match self.current_rev() {
+                Some(r) => vec![r.change_id.clone()],
+                None => return,
+            }
+        } else {
+            self.selected_revisions.iter().cloned().collect()
+        };
+        self.squash_source = Some((ids, Vec::new()));
+        self.mode = Mode::SquashTarget;
+        self.active_tab = ActiveTab::Log;
+        self.ok("Pick target revision for squash, Enter to confirm, Esc to cancel");
+    }
+
     fn start_squash_to_target(&mut self) {
         if self.selected_files.is_empty() {
             if let Some(i) = self.status_list_state.selected() {
@@ -346,6 +403,15 @@ impl App {
                 return;
             }
         }
+        let files: Vec<String> = self.selected_files.iter().cloned().collect();
+        let src = self
+            .revisions
+            .iter()
+            .find(|r| r.is_working_copy)
+            .map(|r| r.change_id.clone())
+            .unwrap_or_else(|| "@".to_string());
+
+        self.squash_source = Some((vec![src], files));
         self.mode = Mode::SquashTarget;
         self.active_tab = ActiveTab::Log;
         self.ok("Pick target revision for squash, Enter to confirm, Esc to cancel");
@@ -363,7 +429,7 @@ impl App {
         };
         self.perform_or_confirm(PendingAction::Squash {
             revisions: vec![rev.change_id.clone()],
-            target: "@-".to_string(),
+            target: None,
             files,
         });
     }
@@ -445,18 +511,12 @@ impl App {
     fn handle_squash_target(&mut self, key: KeyCode) {
         match key {
             KeyCode::Enter => {
-                if let Some(dest) = self.current_rev().map(|r| r.change_id.clone()) {
-                    let files: Vec<String> = self.selected_files.iter().cloned().collect();
-                    let src = self
-                        .revisions
-                        .iter()
-                        .find(|r| r.is_working_copy)
-                        .map(|r| r.change_id.clone())
-                        .unwrap_or_else(|| "@".to_string());
-
+                if let Some(dest) = self.current_rev().map(|r| r.change_id.clone())
+                    && let Some((revisions, files)) = self.squash_source.take()
+                {
                     self.perform_or_confirm(PendingAction::Squash {
-                        revisions: vec![src],
-                        target: dest,
+                        revisions,
+                        target: Some(dest),
                         files,
                     });
                 }
@@ -464,6 +524,7 @@ impl App {
                 self.selected_files.clear();
             }
             KeyCode::Esc => {
+                self.squash_source = None;
                 self.mode = Mode::Normal;
                 self.active_tab = ActiveTab::Status;
                 self.ok("Squash cancelled");
@@ -471,6 +532,190 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.next(),
             KeyCode::Char('k') | KeyCode::Up => self.previous(),
             _ => {}
+        }
+    }
+
+    fn handle_bookmark_menu(&mut self, key: KeyCode) {
+        let current_sel = if let Mode::BookmarkMenu(s) = self.mode {
+            s
+        } else {
+            0
+        };
+        match key {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.mode = Mode::BookmarkMenu((current_sel + 1) % 4);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.mode = Mode::BookmarkMenu(if current_sel == 0 { 3 } else { current_sel - 1 });
+            }
+            KeyCode::Enter => {
+                let action = match current_sel {
+                    0 => BookmarkAction::Create,
+                    1 => BookmarkAction::Move,
+                    2 => BookmarkAction::Rename,
+                    3 => BookmarkAction::Delete,
+                    _ => return,
+                };
+                self.start_bookmark_action(action);
+            }
+            KeyCode::Esc => self.mode = Mode::Normal,
+            _ => {}
+        }
+    }
+
+    fn start_bookmark_action(&mut self, action: BookmarkAction) {
+        match action {
+            BookmarkAction::Create => {
+                self.mode = Mode::BookmarkPrompt {
+                    action,
+                    input: String::new(),
+                    target_bookmark: None,
+                };
+            }
+            BookmarkAction::Move | BookmarkAction::Rename | BookmarkAction::Delete => {
+                let mut bookmarks: Vec<String> = self
+                    .revisions
+                    .iter()
+                    .flat_map(|r| r.bookmarks.clone())
+                    .filter(|b| !b.contains('@'))
+                    .collect();
+                bookmarks.sort();
+                bookmarks.dedup();
+
+                if bookmarks.is_empty() {
+                    self.err("No bookmarks found");
+                    self.mode = Mode::Normal;
+                    return;
+                }
+
+                let mut state = ListState::default();
+                state.select(Some(0));
+                self.mode = Mode::BookmarkList {
+                    action,
+                    state,
+                    bookmarks,
+                };
+            }
+        }
+    }
+
+    fn handle_bookmark_list(&mut self, key: KeyCode) {
+        if let Mode::BookmarkList {
+            action,
+            ref mut state,
+            ref bookmarks,
+        } = self.mode
+        {
+            match key {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let i = state.selected().unwrap_or(0);
+                    state.select(Some((i + 1) % bookmarks.len()));
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    let i = state.selected().unwrap_or(0);
+                    state.select(Some(if i == 0 { bookmarks.len() - 1 } else { i - 1 }));
+                }
+                KeyCode::Enter => {
+                    if let Some(i) = state.selected() {
+                        let selected_bookmark = bookmarks[i].clone();
+                        match action {
+                            BookmarkAction::Delete => {
+                                match crate::jj::bookmark_delete(&selected_bookmark) {
+                                    Ok(_) => {
+                                        self.ok(format!("Deleted bookmark {}", selected_bookmark));
+                                        self.refresh_log();
+                                        self.mode = Mode::Normal;
+                                    }
+                                    Err(e) => self.err(e.to_string()),
+                                }
+                            }
+                            BookmarkAction::Move => {
+                                if let Some(rev) = self.current_rev() {
+                                    match crate::jj::bookmark_move(
+                                        &selected_bookmark,
+                                        &rev.change_id,
+                                    ) {
+                                        Ok(_) => {
+                                            self.ok(format!(
+                                                "Moved bookmark {} to {}",
+                                                selected_bookmark,
+                                                &rev.change_id[..8.min(rev.change_id.len())]
+                                            ));
+                                            self.refresh_log();
+                                            self.mode = Mode::Normal;
+                                        }
+                                        Err(e) => self.err(e.to_string()),
+                                    }
+                                }
+                            }
+                            BookmarkAction::Rename => {
+                                self.mode = Mode::BookmarkPrompt {
+                                    action,
+                                    input: selected_bookmark.clone(),
+                                    target_bookmark: Some(selected_bookmark),
+                                };
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                KeyCode::Esc => self.mode = Mode::Normal,
+                _ => {}
+            }
+        }
+    }
+
+    fn handle_bookmark_prompt(&mut self, key: KeyCode) {
+        if let Mode::BookmarkPrompt {
+            action,
+            ref mut input,
+            ref target_bookmark,
+        } = self.mode
+        {
+            match key {
+                KeyCode::Enter => {
+                    let name = input.trim().to_string();
+                    if name.is_empty() {
+                        self.err("Bookmark name cannot be empty");
+                        return;
+                    }
+                    let res = match action {
+                        BookmarkAction::Create => {
+                            if let Some(rev) = self.current_rev() {
+                                crate::jj::bookmark_create(&name, &rev.change_id)
+                                    .map(|_| format!("Created bookmark {}", name))
+                            } else {
+                                Err(anyhow::anyhow!("No revision selected"))
+                            }
+                        }
+                        BookmarkAction::Rename => {
+                            if let Some(old) = target_bookmark {
+                                crate::jj::bookmark_rename(old, &name)
+                                    .map(|_| format!("Renamed {} to {}", old, name))
+                            } else {
+                                Err(anyhow::anyhow!("No bookmark to rename"))
+                            }
+                        }
+                        _ => Ok("".to_string()),
+                    };
+                    match res {
+                        Ok(msg) => {
+                            self.ok(msg);
+                            self.refresh_log();
+                            self.mode = Mode::Normal;
+                        }
+                        Err(e) => self.err(e.to_string()),
+                    }
+                }
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => {
+                    input.push(c);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -532,7 +777,7 @@ impl App {
                 let src = "@".to_string();
                 self.perform_or_confirm(PendingAction::Squash {
                     revisions: vec![src],
-                    target,
+                    target: Some(target),
                     files,
                 });
             }
@@ -634,7 +879,9 @@ impl App {
     fn perform_or_confirm(&mut self, action: PendingAction) {
         let is_immutable = match &action {
             PendingAction::Abandon(ids) => ids.iter().any(|id| self.is_rev_immutable(id)),
-            PendingAction::Squash { target, .. } => self.is_rev_immutable(target),
+            PendingAction::Squash { target, .. } => {
+                target.as_ref().is_some_and(|t| self.is_rev_immutable(t))
+            }
             PendingAction::Describe { revision, .. } => self.is_rev_immutable(revision),
             PendingAction::Rebase { destination, .. } => self.is_rev_immutable(destination),
             PendingAction::Absorb => false,
@@ -657,54 +904,67 @@ impl App {
     }
 
     fn execute_pending_action(&mut self, action: PendingAction, ignore_immutable: bool) {
-        let res = match action {
-            PendingAction::Abandon(ids) => {
-                let mut errs = Vec::new();
-                for id in &ids {
-                    if let Err(e) = crate::jj::abandon(id, ignore_immutable) {
-                        errs.push(e.to_string());
+        #[cfg(test)]
+        {
+            let _ = ignore_immutable;
+            self.last_action = Some(action);
+            return;
+        }
+
+        #[cfg(not(test))]
+        {
+            let res = match action {
+                PendingAction::Abandon(ids) => {
+                    let mut errs = Vec::new();
+                    for id in &ids {
+                        if let Err(e) = crate::jj::abandon(id, ignore_immutable) {
+                            errs.push(e.to_string());
+                        }
+                    }
+                    if errs.is_empty() {
+                        Ok(format!("Abandoned {} revision(s)", ids.len()))
+                    } else {
+                        Err(anyhow::anyhow!(errs.join("; ")))
                     }
                 }
-                if errs.is_empty() {
-                    Ok(format!("Abandoned {} revision(s)", ids.len()))
-                } else {
-                    Err(anyhow::anyhow!(errs.join("; ")))
+                PendingAction::Squash {
+                    revisions,
+                    target,
+                    files,
+                } => crate::jj::squash(&revisions, target.as_deref(), &files, ignore_immutable)
+                    .map(|_| match target {
+                        Some(t) => format!("Squashed into {}", t),
+                        None => "Squashed into parent".to_string(),
+                    }),
+                PendingAction::Describe { revision, message } => {
+                    crate::jj::describe(&revision, &message, ignore_immutable)
+                        .map(|_| "Description updated".to_string())
                 }
-            }
-            PendingAction::Squash {
-                revisions,
-                target,
-                files,
-            } => crate::jj::squash(&revisions, Some(&target), &files, ignore_immutable)
-                .map(|_| format!("Squashed into {}", target)),
-            PendingAction::Describe { revision, message } => {
-                crate::jj::describe(&revision, &message, ignore_immutable)
-                    .map(|_| "Description updated".to_string())
-            }
-            PendingAction::Rebase {
-                source,
-                destination,
-            } => crate::jj::rebase(&source, &destination, ignore_immutable)
-                .map(|_| format!("Rebased {} -> {}", source, destination)),
-            PendingAction::Absorb => crate::jj::absorb(ignore_immutable).map(|out| {
-                self.command_output = Some(out);
-                "Absorb completed".to_string()
-            }),
-            PendingAction::DiscardFiles(files) => crate::jj::restore(&files, None)
-                .map(|_| format!("Discarded changes in {} files", files.len())),
-        };
+                PendingAction::Rebase {
+                    source,
+                    destination,
+                } => crate::jj::rebase(&source, &destination, ignore_immutable)
+                    .map(|_| format!("Rebased {} -> {}", source, destination)),
+                PendingAction::Absorb => crate::jj::absorb(ignore_immutable).map(|out| {
+                    self.command_output = Some(out);
+                    "Absorb completed".to_string()
+                }),
+                PendingAction::DiscardFiles(files) => crate::jj::restore(&files, None)
+                    .map(|_| format!("Discarded changes in {} files", files.len())),
+            };
 
-        match res {
-            Ok(msg) => {
-                self.ok(msg);
-                self.refresh_log();
-                if self.active_tab == ActiveTab::Status {
-                    self.refresh_status();
+            match res {
+                Ok(msg) => {
+                    self.ok(msg);
+                    self.refresh_log();
+                    if self.active_tab == ActiveTab::Status {
+                        self.refresh_status();
+                    }
+                    self.selected_revisions.clear();
+                    self.selected_files.clear();
                 }
-                self.selected_revisions.clear();
-                self.selected_files.clear();
+                Err(e) => self.err(e.to_string()),
             }
-            Err(e) => self.err(e.to_string()),
         }
     }
 
@@ -728,7 +988,7 @@ impl App {
         }
         self.perform_or_confirm(PendingAction::Squash {
             revisions: ids,
-            target: "@-".to_string(),
+            target: None,
             files: Vec::new(),
         });
     }
@@ -739,7 +999,7 @@ impl App {
         };
         self.perform_or_confirm(PendingAction::Squash {
             revisions: vec![id],
-            target: "@-".to_string(),
+            target: None,
             files: Vec::new(),
         });
     }
@@ -847,5 +1107,57 @@ impl App {
         self.theme = next.theme();
         self.theme.override_from_config(&self.config.colors);
         self.ok(format!("Theme: {}", self.theme.name));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::theme::ThemeKind;
+
+    #[test]
+    fn test_squash_cursor_generates_correct_action() {
+        let mut app = App::new(ThemeKind::TokyoNight, Config::default());
+        let rev = Revision {
+            change_id: "test-id".to_string(),
+            ..Revision::default()
+        };
+        app.revisions = vec![rev.clone()];
+        app.list_state.select(Some(0));
+
+        app.squash_cursor();
+
+        if let Some(PendingAction::Squash {
+            revisions,
+            target,
+            files,
+        }) = app.last_action
+        {
+            assert_eq!(revisions, vec!["test-id".to_string()]);
+            assert_eq!(target, None);
+            assert!(files.is_empty());
+        } else {
+            panic!("Expected Squash action, got {:?}", app.last_action);
+        }
+    }
+
+    #[test]
+    fn test_s_enters_squash_target_mode() {
+        let mut app = App::new(ThemeKind::TokyoNight, Config::default());
+        let rev = Revision {
+            change_id: "test-id".to_string(),
+            ..Revision::default()
+        };
+        app.revisions = vec![rev.clone()];
+        app.list_state.select(Some(0));
+
+        app.on_key(KeyCode::Char('s'), KeyModifiers::empty());
+
+        assert!(matches!(app.mode, Mode::SquashTarget));
+        assert_eq!(
+            app.squash_source,
+            Some((vec!["test-id".to_string()], vec![]))
+        );
     }
 }

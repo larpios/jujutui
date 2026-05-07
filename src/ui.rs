@@ -57,7 +57,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     render_help_bar(f, app, outer[3]);
 
     // Overlays — drawn last so they appear on top
-    match &app.mode {
+    match &mut app.mode {
         Mode::CommandPalette => render_input_overlay(
             f,
             &app.theme,
@@ -74,6 +74,34 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             app.theme.border_focused,
             "Enter to confirm · Esc to cancel",
         ),
+        Mode::BookmarkMenu(sel) => render_bookmark_menu(f, &app.theme, *sel),
+        Mode::BookmarkList {
+            action,
+            state,
+            bookmarks,
+        } => render_bookmark_list(f, &app.theme, *action, state, bookmarks),
+        Mode::BookmarkPrompt {
+            action,
+            input,
+            target_bookmark,
+        } => {
+            let title = match action {
+                crate::app::BookmarkAction::Create => " Create Bookmark ".to_string(),
+                crate::app::BookmarkAction::Rename => format!(
+                    " Rename Bookmark: {} ",
+                    target_bookmark.as_deref().unwrap_or("")
+                ),
+                _ => " Bookmark Action ".to_string(),
+            };
+            render_input_overlay(
+                f,
+                &app.theme,
+                &title,
+                input,
+                app.theme.border_focused,
+                "Enter to confirm · Esc to cancel",
+            )
+        }
         Mode::Confirm(action) => render_confirm_overlay(f, &app.theme, action),
         _ => {}
     }
@@ -376,10 +404,13 @@ fn render_help_bar(f: &mut Frame, app: &App, area: Rect) {
             " [?] help  [j/k] scroll  [Ctrl+D/U] page  [h] back to log"
         }
         Mode::Normal => {
-            " [?] help  [Tab] status  [:] commands  [l] diff  [f/p] fetch/push  [q] quit"
+            " [?] help  [Tab] status  [:] commands  [b] bookmarks  [l] diff  [f/p] fetch/push  [q] quit"
         }
         Mode::CommandPalette => " [Enter] execute  [Esc] cancel",
         Mode::Describe => " [Enter] confirm  [Esc] cancel",
+        Mode::BookmarkMenu(_) => " [j/k] navigate  [Enter] choose  [Esc] cancel",
+        Mode::BookmarkList { .. } => " [j/k] navigate  [Enter] select  [Esc] cancel",
+        Mode::BookmarkPrompt { .. } => " [Enter] confirm  [Esc] cancel",
         Mode::RebaseTarget => " [j/k] choose destination  [Enter] rebase here  [Esc] cancel",
         Mode::SquashTarget => " [j/k] choose target  [Enter] squash here  [Esc] cancel",
         Mode::Confirm(_) => " [y] confirm  [n/Esc] cancel",
@@ -446,6 +477,79 @@ fn render_status_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .style(Style::default().bg(t.bg));
 
     f.render_stateful_widget(list, area, &mut app.status_list_state);
+}
+
+fn render_bookmark_menu(f: &mut Frame, t: &Theme, selected: usize) {
+    let area = centered_rect(30, 8, f.area());
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .title(" Bookmark Action ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_focused))
+        .style(Style::default().bg(t.bg));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let options = ["Create", "Move (Set)", "Rename", "Delete"];
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, &opt)| {
+            let style = if i == selected {
+                Style::default()
+                    .fg(t.selected)
+                    .bg(t.border_unfocused)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.desc)
+            };
+            ListItem::new(format!("  {opt}")).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
+}
+
+fn render_bookmark_list(
+    f: &mut Frame,
+    t: &Theme,
+    action: crate::app::BookmarkAction,
+    state: &mut ratatui::widgets::ListState,
+    bookmarks: &[String],
+) {
+    let title = format!(" {} Bookmark ", action.name());
+    let area = centered_rect(50, 20, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(title)
+        .title_bottom(Line::from(Span::styled(
+            " [j/k] navigate  [Enter] select  [Esc] cancel ",
+            Style::default().fg(t.immutable),
+        )))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_focused))
+        .style(Style::default().bg(t.bg));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let items: Vec<ListItem> = bookmarks
+        .iter()
+        .map(|b| ListItem::new(format!("  {b}")).style(Style::default().fg(t.desc)))
+        .collect();
+
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .bg(t.border_unfocused)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
+
+    f.render_stateful_widget(list, inner, state);
 }
 
 fn render_input_overlay(
@@ -529,11 +633,12 @@ fn render_help_overlay(f: &mut Frame, app: &App) {
         row("j / k", "move up / down", "n", "new revision"),
         row("g / G", "top / bottom", "e / Ent", "edit (working copy)"),
         row("l / h", "focus diff / log", "d", "describe commit"),
-        row("Tab", "switch Log/Status", "a", "abandon"),
-        row("Space / v", "toggle select", "s", "squash selected"),
-        row("Esc", "clear selection", "S", "squash cursor"),
-        row("Ctrl+S", "split revision", "D", "duplicate"),
-        row("f / p", "git fetch / push", "r", "rebase (pick target)"),
+        row("Tab", "switch Log/Status", "b", "bookmark menu"),
+        row("Space / v", "toggle select", "a", "abandon"),
+        row("s", "squash (pick target)", "S", "squash into parent"),
+        row("Esc", "clear selection", "D", "duplicate"),
+        row("Ctrl+S", "split revision", "r", "rebase (pick target)"),
+        row("f / p", "git fetch / push", "", ""),
         blank.clone(),
         Line::from(vec![
             Span::raw("  "),

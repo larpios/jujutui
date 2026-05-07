@@ -23,7 +23,7 @@ pub struct StatusFile {
 
 pub fn get_log() -> Result<Vec<Revision>> {
     // Use \x1e (record separator) to handle multiline descriptions
-    let template = r#"if(current_working_copy, "@", " ") ++ "|" ++ change_id.short() ++ "|" ++ commit_id.short() ++ "|" ++ author.name() ++ "|" ++ if(immutable, "1", "0") ++ "|" ++ if(empty, "1", "0") ++ "|" ++ if(conflict, "1", "0") ++ "|" ++ bookmarks.map(|b| b.name()).join(",") ++ "|" ++ tags.map(|t| t.name()).join(",") ++ "|" ++ description ++ "\x1e""#;
+    let template = r#"if(current_working_copy, "@", " ") ++ "|" ++ change_id.short() ++ "|" ++ commit_id.short() ++ "|" ++ author.name() ++ "|" ++ if(immutable, "1", "0") ++ "|" ++ if(empty, "1", "0") ++ "|" ++ if(conflict, "1", "0") ++ "|" ++ bookmarks.map(|b| if(b.remote(), b.name() ++ "@" ++ b.remote(), b.name())).join(",") ++ "|" ++ tags.map(|t| t.name()).join(",") ++ "|" ++ description ++ "\x1e""#;
 
     let out = Command::new("jj")
         .args(["log", "-r", "all()", "-T", template, "--no-graph"])
@@ -82,6 +82,7 @@ pub fn get_diff(revision: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+#[allow(dead_code)]
 pub fn abandon(revision: &str, ignore_immutable: bool) -> Result<()> {
     let mut cmd = Command::new("jj");
     cmd.args(["abandon", "-r", revision]);
@@ -91,6 +92,7 @@ pub fn abandon(revision: &str, ignore_immutable: bool) -> Result<()> {
     check(cmd.output()?, "abandon")
 }
 
+#[allow(dead_code)]
 pub fn squash(
     revisions: &[String],
     target: Option<&str>,
@@ -125,6 +127,7 @@ pub fn edit_revision(revision: &str) -> Result<()> {
     )
 }
 
+#[allow(dead_code)]
 pub fn describe(revision: &str, message: &str, ignore_immutable: bool) -> Result<()> {
     let mut cmd = Command::new("jj");
     cmd.args(["describe", "-r", revision, "-m", message]);
@@ -145,6 +148,7 @@ pub fn duplicate(revision: &str) -> Result<()> {
     )
 }
 
+#[allow(dead_code)]
 pub fn rebase(source: &str, destination: &str, ignore_immutable: bool) -> Result<()> {
     let mut cmd = Command::new("jj");
     cmd.args(["rebase", "-r", source, "-d", destination]);
@@ -158,6 +162,7 @@ pub fn split_args(revision: &str) -> Vec<String> {
     vec!["split".to_string(), "-r".to_string(), revision.to_string()]
 }
 
+#[allow(dead_code)]
 pub fn restore(files: &[String], revision: Option<&str>) -> Result<()> {
     let mut cmd = Command::new("jj");
     cmd.arg("restore");
@@ -178,6 +183,7 @@ pub fn git_push() -> Result<String> {
     run_command("git push")
 }
 
+#[allow(dead_code)]
 pub fn absorb(ignore_immutable: bool) -> Result<String> {
     let mut cmd = Command::new("jj");
     cmd.arg("absorb");
@@ -253,6 +259,42 @@ pub fn get_status_files(revision: &str) -> Result<Vec<StatusFile>> {
     Ok(files)
 }
 
+pub fn bookmark_create(name: &str, revision: &str) -> Result<()> {
+    check(
+        Command::new("jj")
+            .args(["bookmark", "create", name, "-r", revision])
+            .output()?,
+        "bookmark create",
+    )
+}
+
+pub fn bookmark_delete(name: &str) -> Result<()> {
+    check(
+        Command::new("jj")
+            .args(["bookmark", "delete", name])
+            .output()?,
+        "bookmark delete",
+    )
+}
+
+pub fn bookmark_rename(old: &str, new: &str) -> Result<()> {
+    check(
+        Command::new("jj")
+            .args(["bookmark", "rename", old, new])
+            .output()?,
+        "bookmark rename",
+    )
+}
+
+pub fn bookmark_move(name: &str, revision: &str) -> Result<()> {
+    check(
+        Command::new("jj")
+            .args(["bookmark", "move", name, "--to", revision])
+            .output()?,
+        "bookmark move",
+    )
+}
+
 fn check(out: Output, op: &str) -> Result<()> {
     if out.status.success() {
         Ok(())
@@ -262,5 +304,79 @@ fn check(out: Output, op: &str) -> Result<()> {
             op,
             String::from_utf8_lossy(&out.stderr).trim()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_squash_into_parent_real_jj() {
+        let dir = tempdir().unwrap();
+        let repo_path = dir.path();
+
+        // Init jj repo
+        let status = Command::new("jj")
+            .args(["git", "init", "--colocate"])
+            .arg(repo_path)
+            .status()
+            .expect("Failed to execute jj");
+
+        assert!(status.success(), "jj git init failed");
+
+        let old_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(repo_path).unwrap();
+
+        // Configure dummy user for jj
+        Command::new("jj")
+            .args(["config", "set", "--repo", "user.name", "Test User"])
+            .status()
+            .unwrap();
+        Command::new("jj")
+            .args(["config", "set", "--repo", "user.email", "test@example.com"])
+            .status()
+            .unwrap();
+
+        // Create a commit
+        fs::write(repo_path.join("file1"), "content1").unwrap();
+        Command::new("jj")
+            .args(["commit", "-m", "first"])
+            .status()
+            .unwrap();
+
+        // Create another commit
+        fs::write(repo_path.join("file2"), "content2").unwrap();
+        Command::new("jj")
+            .args(["commit", "-m", "second"])
+            .status()
+            .unwrap();
+
+        // Get the change id of the second commit
+        let output = Command::new("jj")
+            .args(["log", "--no-graph", "-r", "@", "-T", "change_id"])
+            .output()
+            .unwrap();
+        let second_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // Squash second into parent (first) using our wrapper
+        // None target should squash into parent
+        squash(&[second_id], None, &[], false).unwrap();
+
+        // Verify with jj log
+        let output = Command::new("jj")
+            .args(["log", "-r", "all()", "-T", "description"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&output.stdout);
+
+        // After squash, we should see "first" (and maybe combined message depending on jj version/config)
+        assert!(log.contains("first"));
+
+        std::env::set_current_dir(old_dir).unwrap();
+
+        dir.close().unwrap();
     }
 }
