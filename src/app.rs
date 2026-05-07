@@ -231,6 +231,14 @@ impl App {
             }
             KeyCode::Char(' ') | KeyCode::Char('v') => self.toggle_selection(),
             KeyCode::Char('a') => self.abandon_selected(),
+            KeyCode::Char('s') if mods.contains(KeyModifiers::CONTROL) => {
+                let id = self
+                    .current_rev()
+                    .map(|r| r.change_id.clone())
+                    .unwrap_or_else(|| "@".to_string());
+                let args = crate::jj::split_args(&id);
+                self.run_interactive(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            }
             KeyCode::Char('s') => self.squash_selected(),
             KeyCode::Char('S') => self.squash_cursor(),
             KeyCode::Char('n') => self.new_revision(),
@@ -509,7 +517,14 @@ impl App {
             "push" => self.git_sync(false),
             "absorb" => self.perform_or_confirm(PendingAction::Absorb),
             "discard" => self.discard_files(),
-            "split" => self.run_interactive(&["split"]),
+            "split" => {
+                let id = self
+                    .current_rev()
+                    .map(|r| r.change_id.clone())
+                    .unwrap_or_else(|| "@".to_string());
+                let args = crate::jj::split_args(&id);
+                self.run_interactive(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            }
             "q" | "quit" => self.should_quit = true,
             "squash-to" if parts.len() > 1 => {
                 let target = parts[1].to_string();

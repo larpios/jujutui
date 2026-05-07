@@ -11,6 +11,8 @@ pub struct Revision {
     pub is_immutable: bool,
     pub is_empty: bool,
     pub has_conflict: bool,
+    pub bookmarks: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -21,7 +23,7 @@ pub struct StatusFile {
 
 pub fn get_log() -> Result<Vec<Revision>> {
     // Use \x1e (record separator) to handle multiline descriptions
-    let template = r#"if(current_working_copy, "@", " ") ++ "|" ++ change_id.short() ++ "|" ++ commit_id.short() ++ "|" ++ author.name() ++ "|" ++ if(immutable, "1", "0") ++ "|" ++ if(empty, "1", "0") ++ "|" ++ if(conflict, "1", "0") ++ "|" ++ description ++ "\x1e""#;
+    let template = r#"if(current_working_copy, "@", " ") ++ "|" ++ change_id.short() ++ "|" ++ commit_id.short() ++ "|" ++ author.name() ++ "|" ++ if(immutable, "1", "0") ++ "|" ++ if(empty, "1", "0") ++ "|" ++ if(conflict, "1", "0") ++ "|" ++ bookmarks.map(|b| b.name()).join(",") ++ "|" ++ tags.map(|t| t.name()).join(",") ++ "|" ++ description ++ "\x1e""#;
 
     let out = Command::new("jj")
         .args(["log", "-r", "all()", "-T", template, "--no-graph"])
@@ -40,8 +42,8 @@ pub fn get_log() -> Result<Vec<Revision>> {
         if record.trim().is_empty() {
             continue;
         }
-        let parts: Vec<&str> = record.splitn(8, '|').collect();
-        if parts.len() >= 8 {
+        let parts: Vec<&str> = record.splitn(10, '|').collect();
+        if parts.len() >= 10 {
             revisions.push(Revision {
                 is_working_copy: parts[0].trim() == "@",
                 change_id: parts[1].to_string(),
@@ -50,7 +52,17 @@ pub fn get_log() -> Result<Vec<Revision>> {
                 is_immutable: parts[4] == "1",
                 is_empty: parts[5] == "1",
                 has_conflict: parts[6] == "1",
-                description: parts[7].to_string(),
+                bookmarks: parts[7]
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect(),
+                tags: parts[8]
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect(),
+                description: parts[9].to_string(),
             });
         }
     }
@@ -142,6 +154,10 @@ pub fn rebase(source: &str, destination: &str, ignore_immutable: bool) -> Result
     check(cmd.output()?, "rebase")
 }
 
+pub fn split_args(revision: &str) -> Vec<String> {
+    vec!["split".to_string(), "-r".to_string(), revision.to_string()]
+}
+
 pub fn restore(files: &[String], revision: Option<&str>) -> Result<()> {
     let mut cmd = Command::new("jj");
     cmd.arg("restore");
@@ -170,7 +186,7 @@ pub fn absorb(ignore_immutable: bool) -> Result<String> {
     }
     let out = cmd.output()?;
     let combined = format!(
-        "{}{}",
+        "{}{} ",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -207,7 +223,7 @@ pub fn run_command(cmd: &str) -> Result<String> {
         if !combined.is_empty() {
             combined.push('\n');
         }
-        combined.push_str("--- STDERR ---\n");
+        combined.push_str("-- STDERR --\n");
         combined.push_str(&stderr);
     }
     Ok(combined)

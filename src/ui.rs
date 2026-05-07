@@ -320,7 +320,7 @@ fn render_diff(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(border_color))
         .style(Style::default().bg(t.bg));
 
-    let content = if app.current_diff.is_empty() {
+    let mut content = if app.current_diff.is_empty() {
         ratatui::text::Text::raw("  (no changes)")
     } else {
         app.current_diff
@@ -329,14 +329,28 @@ fn render_diff(f: &mut Frame, app: &App, area: Rect) {
             .unwrap_or_else(|_| ratatui::text::Text::raw(app.current_diff.clone()))
     };
 
-    f.render_widget(
-        Paragraph::new(content)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .scroll((app.diff_scroll, 0))
-            .style(Style::default().bg(t.bg)),
-        area,
-    );
+    // Fix transparency issue: ansi_to_tui might leave some backgrounds as Color::Reset
+    // or None, which punches through to the terminal background.
+    if !app.config.transparent_background {
+        for line in &mut content.lines {
+            for span in &mut line.spans {
+                if span.style.bg == Some(Color::Reset) || span.style.bg.is_none() {
+                    span.style.bg = Some(t.bg);
+                }
+            }
+        }
+    }
+
+    let mut paragraph = Paragraph::new(content)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((app.diff_scroll, 0));
+
+    if !app.config.transparent_background {
+        paragraph = paragraph.style(Style::default().bg(t.bg));
+    }
+
+    f.render_widget(paragraph, area);
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
@@ -518,7 +532,7 @@ fn render_help_overlay(f: &mut Frame, app: &App) {
         row("Tab", "switch Log/Status", "a", "abandon"),
         row("Space / v", "toggle select", "s", "squash selected"),
         row("Esc", "clear selection", "S", "squash cursor"),
-        row("", "", "D", "duplicate"),
+        row("Ctrl+S", "split revision", "D", "duplicate"),
         row("f / p", "git fetch / push", "r", "rebase (pick target)"),
         blank.clone(),
         Line::from(vec![
@@ -631,11 +645,50 @@ fn revision_item<'a>(
         t.desc
     };
 
+    let author_short: String = rev.author.chars().take(14).collect();
+
+    let mut line_spans = vec![
+        Span::styled(format!(" {icon} "), icon_style),
+        Span::styled(
+            format!("{:<12} ", rev.change_id),
+            Style::default().fg(id_fg),
+        ),
+        Span::styled(
+            format!("{:<14} ", author_short),
+            Style::default().fg(author_fg),
+        ),
+    ];
+
+    // Add bookmarks and tags
+    for bookmark in &rev.bookmarks {
+        line_spans.push(Span::styled(
+            format!("{bookmark} "),
+            Style::default()
+                .fg(t.working_copy)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    for tag in &rev.tags {
+        line_spans.push(Span::styled(
+            format!("{tag} "),
+            Style::default()
+                .fg(t.change_id)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     let first_line = rev.description.lines().next().unwrap_or("(no description)");
 
     // Calculate available width for description
-    // icon (3) + id (13) + author (15) + spacing
-    let reserved = 3 + 13 + 15 + 4;
+    // icon (3) + id (13) + author (15) + bookmarks + tags + spacing
+    let mut reserved = 3 + 13 + 15 + 1;
+    for b in &rev.bookmarks {
+        reserved += b.chars().count() + 1;
+    }
+    for t in &rev.tags {
+        reserved += t.chars().count() + 1;
+    }
+
     let available_width = width.saturating_sub(reserved as u16) as usize;
 
     let desc: String = if first_line.chars().count() > available_width {
@@ -650,22 +703,9 @@ fn revision_item<'a>(
         first_line.to_string()
     };
 
-    let author_short: String = rev.author.chars().take(14).collect();
+    line_spans.push(Span::styled(desc, Style::default().fg(desc_fg)));
 
-    let line = Line::from(vec![
-        Span::styled(format!(" {icon} "), icon_style),
-        Span::styled(
-            format!("{:<12} ", rev.change_id),
-            Style::default().fg(id_fg),
-        ),
-        Span::styled(
-            format!("{:<14} ", author_short),
-            Style::default().fg(author_fg),
-        ),
-        Span::styled(desc, Style::default().fg(desc_fg)),
-    ]);
-
-    ListItem::new(line)
+    ListItem::new(Line::from(line_spans))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
