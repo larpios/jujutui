@@ -102,10 +102,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 "Enter to confirm · Esc to cancel",
             )
         }
-        Mode::PushMenu(sel) => render_push_menu(f, &app.theme, *sel),
-        Mode::PushBookmarkList { state, bookmarks } => {
-            render_push_bookmark_list(f, &app.theme, state, bookmarks)
+        Mode::PushContextMenu(sel, bookmarks) => {
+            render_push_context_menu(f, &app.theme, *sel, bookmarks)
         }
+        Mode::PushBookmarkList {
+            state, bookmarks, ..
+        } => render_push_bookmark_list(f, &app.theme, state, bookmarks),
         Mode::Confirm(action) => render_confirm_overlay(f, &app.theme, action),
         _ => {}
     }
@@ -415,7 +417,7 @@ fn render_help_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::BookmarkMenu(_) => " [j/k] navigate  [Enter] choose  [Esc] cancel",
         Mode::BookmarkList { .. } => " [j/k] navigate  [Enter] select  [Esc] cancel",
         Mode::BookmarkPrompt { .. } => " [Enter] confirm  [Esc] cancel",
-        Mode::PushMenu(_) => " [j/k] navigate  [Enter] choose  [Esc] cancel",
+        Mode::PushContextMenu(_, _) => " [j/k] navigate  [Enter] choose  [Esc] cancel",
         Mode::PushBookmarkList { .. } => " [j/k] navigate  [Enter] select  [Esc] cancel",
         Mode::RebaseTarget => " [j/k] choose destination  [Enter] rebase here  [Esc] cancel",
         Mode::SquashTarget => " [j/k] choose target  [Enter] squash here  [Esc] cancel",
@@ -558,11 +560,19 @@ fn render_bookmark_list(
     f.render_stateful_widget(list, inner, state);
 }
 
-fn render_push_menu(f: &mut Frame, t: &Theme, selected: usize) {
-    let area = centered_rect(42, 10, f.area());
+fn render_push_context_menu(f: &mut Frame, t: &Theme, selected: usize, bookmarks: &[String]) {
+    let num_bookmarks = bookmarks.len();
+    let menu_len = if num_bookmarks == 1 {
+        2
+    } else {
+        num_bookmarks + 1
+    };
+    let height = (menu_len + 2).min(20) as u16;
+
+    let area = centered_rect(50, height, f.area());
     f.render_widget(Clear, area);
     let block = Block::default()
-        .title(" Push Options ")
+        .title(" Push ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(t.border_focused))
@@ -570,16 +580,21 @@ fn render_push_menu(f: &mut Frame, t: &Theme, selected: usize) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let options = [
-        "Push All (--all)",
-        "Push Bookmark...",
-        "Push Change (-c)",
-        "Push Revision (-r)",
-    ];
+    let mut options: Vec<String> = Vec::new();
+    if num_bookmarks == 1 {
+        options.push(format!("Push bookmark: {}", bookmarks[0]));
+        options.push("Push change (-c)".to_string());
+    } else {
+        for b in bookmarks {
+            options.push(format!("Push bookmark: {}", b));
+        }
+        options.push("Push change (-c)".to_string());
+    }
+
     let items: Vec<ListItem> = options
         .iter()
         .enumerate()
-        .map(|(i, &opt)| {
+        .map(|(i, opt)| {
             let style = if i == selected {
                 Style::default()
                     .fg(t.selected)

@@ -23,8 +23,9 @@ pub enum Mode {
         input: String,
         target_bookmark: Option<String>,
     },
-    PushMenu(usize),
+    PushContextMenu(usize, Vec<String>),
     PushBookmarkList {
+        global: bool,
         state: ListState,
         bookmarks: Vec<String>,
     },
@@ -41,9 +42,7 @@ pub enum BookmarkAction {
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum PushTarget {
-    All,
     Bookmark(String),
-    Revision(String),
     Change(String),
 }
 
@@ -224,7 +223,7 @@ impl App {
             Mode::BookmarkMenu(_) => self.handle_bookmark_menu(key),
             Mode::BookmarkList { .. } => self.handle_bookmark_list(key),
             Mode::BookmarkPrompt { .. } => self.handle_bookmark_prompt(key),
-            Mode::PushMenu(_) => self.handle_push_menu(key),
+            Mode::PushContextMenu(_, _) => self.handle_push_context_menu(key),
             Mode::PushBookmarkList { .. } => self.handle_push_bookmark_list(key),
             Mode::Confirm(_) => self.handle_confirm(key),
         }
@@ -311,6 +310,7 @@ impl App {
             KeyCode::Char('D') => self.duplicate_revision(),
             KeyCode::Char('r') => self.start_rebase(),
             KeyCode::Char('u') => self.undo(),
+            KeyCode::Char('U') => self.redo(),
             KeyCode::Char('R') => {
                 self.refresh_log();
                 self.ok("Log refreshed");
@@ -323,9 +323,8 @@ impl App {
                 self.ok("Fetching from remote...");
                 self.pending_git_sync = Some(GitSync::Fetch);
             }
-            KeyCode::Char('p') => {
-                self.mode = Mode::PushMenu(0);
-            }
+            KeyCode::Char('p') => self.start_push_cursor(),
+            KeyCode::Char('P') => self.start_push_bookmark_global(),
             _ => {}
         }
     }
@@ -749,51 +748,37 @@ impl App {
         }
     }
 
-    fn handle_push_menu(&mut self, key: KeyCode) {
-        let current_sel = if let Mode::PushMenu(s) = self.mode {
-            s
-        } else {
-            0
-        };
-        match key {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.mode = Mode::PushMenu((current_sel + 1) % 4);
+    fn start_push_cursor(&mut self) {
+        if !self.selected_revisions.is_empty() {
+            let ids: Vec<String> = self.selected_revisions.iter().cloned().collect();
+            for id in &ids {
+                self.ok(format!("Pushing change {}...", &id[..8.min(id.len())]));
+                self.pending_git_sync = Some(GitSync::Push(PushTarget::Change(id.clone())));
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.mode = Mode::PushMenu(if current_sel == 0 { 3 } else { current_sel - 1 });
-            }
-            KeyCode::Enter => match current_sel {
-                0 => {
-                    self.ok("Pushing all to remote...");
-                    self.pending_git_sync = Some(GitSync::Push(PushTarget::All));
-                    self.mode = Mode::Normal;
-                }
-                1 => self.start_push_bookmark(),
-                2 => {
-                    let change_id = self.current_rev().map(|r| r.change_id.clone());
-                    if let Some(change_id) = change_id {
-                        self.ok(format!("Pushing change {}...", &change_id[..8]));
-                        self.pending_git_sync = Some(GitSync::Push(PushTarget::Change(change_id)));
-                        self.mode = Mode::Normal;
-                    }
-                }
-                3 => {
-                    let change_id = self.current_rev().map(|r| r.change_id.clone());
-                    if let Some(change_id) = change_id {
-                        self.ok(format!("Pushing revision {}...", &change_id[..8]));
-                        self.pending_git_sync =
-                            Some(GitSync::Push(PushTarget::Revision(change_id)));
-                        self.mode = Mode::Normal;
-                    }
-                }
-                _ => {}
-            },
-            KeyCode::Esc => self.mode = Mode::Normal,
-            _ => {}
+            return;
         }
+
+        let Some(rev) = self.current_rev() else {
+            return;
+        };
+        let change_id = rev.change_id.clone();
+        let bookmarks: Vec<String> = rev
+            .bookmarks
+            .iter()
+            .filter(|b| !b.contains('@'))
+            .cloned()
+            .collect();
+
+        if bookmarks.is_empty() {
+            self.ok(format!("Pushing change {}...", &change_id[..8]));
+            self.pending_git_sync = Some(GitSync::Push(PushTarget::Change(change_id)));
+            return;
+        }
+
+        self.mode = Mode::PushContextMenu(0, bookmarks);
     }
 
-    fn start_push_bookmark(&mut self) {
+    fn start_push_bookmark_global(&mut self) {
         let mut bookmarks: Vec<String> = self
             .revisions
             .iter()
@@ -805,19 +790,97 @@ impl App {
 
         if bookmarks.is_empty() {
             self.err("No bookmarks found");
-            self.mode = Mode::Normal;
             return;
         }
 
         let mut state = ListState::default();
         state.select(Some(0));
-        self.mode = Mode::PushBookmarkList { state, bookmarks };
+        self.mode = Mode::PushBookmarkList {
+            global: true,
+            state,
+            bookmarks,
+        };
+    }
+
+    fn handle_push_context_menu(&mut self, key: KeyCode) {
+        let (current_sel, bookmarks): (usize, Vec<String>) =
+            match std::mem::replace(&mut self.mode, Mode::Normal) {
+                Mode::PushContextMenu(s, b) => (s, b),
+                other => {
+                    self.mode = other;
+                    return;
+                }
+            };
+
+        let num_bookmarks = bookmarks.len();
+        let menu_len = if num_bookmarks == 1 {
+            2
+        } else {
+            num_bookmarks + 1
+        };
+
+        match key {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.mode = Mode::PushContextMenu((current_sel + 1) % menu_len, bookmarks);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.mode = Mode::PushContextMenu(
+                    if current_sel == 0 {
+                        menu_len - 1
+                    } else {
+                        current_sel - 1
+                    },
+                    bookmarks,
+                );
+            }
+            KeyCode::Enter => {
+                if num_bookmarks == 1 {
+                    match current_sel {
+                        0 => {
+                            let b = bookmarks[0].clone();
+                            self.ok(format!("Pushing bookmark {}...", b));
+                            self.pending_git_sync = Some(GitSync::Push(PushTarget::Bookmark(b)));
+                            self.mode = Mode::Normal;
+                        }
+                        1 => {
+                            let change_id = self
+                                .current_rev()
+                                .map(|r| r.change_id.clone())
+                                .unwrap_or_default();
+                            self.ok(format!("Pushing change {}...", &change_id[..8]));
+                            self.pending_git_sync =
+                                Some(GitSync::Push(PushTarget::Change(change_id)));
+                            self.mode = Mode::Normal;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    if current_sel < num_bookmarks {
+                        let b = bookmarks[current_sel].clone();
+                        self.ok(format!("Pushing bookmark {}...", b));
+                        self.pending_git_sync = Some(GitSync::Push(PushTarget::Bookmark(b)));
+                        self.mode = Mode::Normal;
+                    } else if current_sel == num_bookmarks {
+                        let change_id = self
+                            .current_rev()
+                            .map(|r| r.change_id.clone())
+                            .unwrap_or_default();
+                        self.ok(format!("Pushing change {}...", &change_id[..8]));
+                        self.pending_git_sync = Some(GitSync::Push(PushTarget::Change(change_id)));
+                        self.mode = Mode::Normal;
+                    }
+                }
+            }
+            KeyCode::Esc => self.mode = Mode::Normal,
+            _ => {}
+        }
     }
 
     fn handle_push_bookmark_list(&mut self, key: KeyCode) {
         if let Mode::PushBookmarkList {
             ref mut state,
             ref bookmarks,
+            ..
         } = self.mode
         {
             match key {
@@ -879,6 +942,7 @@ impl App {
             "describe" | "d" => self.start_describe(),
             "duplicate" | "D" => self.duplicate_revision(),
             "undo" | "u" => self.undo(),
+            "redo" | "U" => self.redo(),
             "refresh" | "r" => {
                 self.refresh_log();
                 self.ok("Log refreshed");
@@ -887,9 +951,7 @@ impl App {
                 self.ok("Fetching from remote...");
                 self.pending_git_sync = Some(GitSync::Fetch);
             }
-            "push" => {
-                self.mode = Mode::PushMenu(0);
-            }
+            "push" => self.start_push_cursor(),
             "absorb" => {
                 self.ok("Absorbing changes...");
                 self.pending_absorb = true;
@@ -1208,17 +1270,22 @@ impl App {
         }
     }
 
+    fn redo(&mut self) {
+        match crate::jj::redo() {
+            Ok(_) => {
+                self.refresh_log();
+                self.ok("Redid last operation");
+            }
+            Err(e) => self.err(e.to_string()),
+        }
+    }
+
     pub fn git_sync(&mut self, sync: GitSync) {
         let (res, success_msg): (anyhow::Result<String>, &str) = match sync {
             GitSync::Fetch => (crate::jj::git_fetch(), "Git fetch completed"),
-            GitSync::Push(PushTarget::All) => (crate::jj::git_push(), "Git push all completed"),
             GitSync::Push(PushTarget::Bookmark(b)) => (
                 crate::jj::git_push_bookmark(&b),
                 "Git push bookmark completed",
-            ),
-            GitSync::Push(PushTarget::Revision(r)) => (
-                crate::jj::git_push_revision(&r),
-                "Git push revision completed",
             ),
             GitSync::Push(PushTarget::Change(c)) => {
                 (crate::jj::git_push_change(&c), "Git push change completed")

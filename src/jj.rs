@@ -141,6 +141,10 @@ pub fn undo() -> Result<()> {
     check(Command::new("jj").args(["undo"]).output()?, "undo")
 }
 
+pub fn redo() -> Result<()> {
+    check(Command::new("jj").args(["redo"]).output()?, "redo")
+}
+
 pub fn duplicate(revision: &str) -> Result<()> {
     check(
         Command::new("jj").args(["duplicate", revision]).output()?,
@@ -179,20 +183,9 @@ pub fn git_fetch() -> Result<String> {
     run_command("git fetch")
 }
 
-pub fn git_push() -> Result<String> {
-    run_command("git push --all")
-}
-
 pub fn git_push_bookmark(bookmark: &str) -> Result<String> {
     let out = Command::new("jj")
         .args(["git", "push", "-b", bookmark])
-        .output()?;
-    format_command_output(out)
-}
-
-pub fn git_push_revision(revision: &str) -> Result<String> {
-    let out = Command::new("jj")
-        .args(["git", "push", "-r", revision])
         .output()?;
     format_command_output(out)
 }
