@@ -52,8 +52,8 @@ where
             break;
         }
 
-        if let Some(fetch) = app.pending_git_sync.take() {
-            app.git_sync(fetch);
+        if let Some(sync) = app.pending_git_sync.take() {
+            app.git_sync(sync);
             continue;
         }
 

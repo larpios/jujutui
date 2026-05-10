@@ -23,6 +23,11 @@ pub enum Mode {
         input: String,
         target_bookmark: Option<String>,
     },
+    PushMenu(usize),
+    PushBookmarkList {
+        state: ListState,
+        bookmarks: Vec<String>,
+    },
     Confirm(PendingAction),
 }
 
@@ -32,6 +37,20 @@ pub enum BookmarkAction {
     Delete,
     Rename,
     Move,
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub enum PushTarget {
+    All,
+    Bookmark(String),
+    Revision(String),
+    Change(String),
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub enum GitSync {
+    Fetch,
+    Push(PushTarget),
 }
 
 impl BookmarkAction {
@@ -114,7 +133,7 @@ pub struct App {
     pub config: Config,
     pub show_help: bool,
     pub pending_interactive_command: Option<Vec<String>>,
-    pub pending_git_sync: Option<bool>,
+    pub pending_git_sync: Option<GitSync>,
     pub pending_absorb: bool,
     pub squash_source: Option<(Vec<String>, Vec<String>)>,
     #[cfg(test)]
@@ -205,6 +224,8 @@ impl App {
             Mode::BookmarkMenu(_) => self.handle_bookmark_menu(key),
             Mode::BookmarkList { .. } => self.handle_bookmark_list(key),
             Mode::BookmarkPrompt { .. } => self.handle_bookmark_prompt(key),
+            Mode::PushMenu(_) => self.handle_push_menu(key),
+            Mode::PushBookmarkList { .. } => self.handle_push_bookmark_list(key),
             Mode::Confirm(_) => self.handle_confirm(key),
         }
     }
@@ -300,11 +321,10 @@ impl App {
             KeyCode::Char('T') => self.cycle_theme(),
             KeyCode::Char('f') => {
                 self.ok("Fetching from remote...");
-                self.pending_git_sync = Some(true);
+                self.pending_git_sync = Some(GitSync::Fetch);
             }
             KeyCode::Char('p') => {
-                self.ok("Pushing to remote...");
-                self.pending_git_sync = Some(false);
+                self.mode = Mode::PushMenu(0);
             }
             _ => {}
         }
@@ -729,6 +749,101 @@ impl App {
         }
     }
 
+    fn handle_push_menu(&mut self, key: KeyCode) {
+        let current_sel = if let Mode::PushMenu(s) = self.mode {
+            s
+        } else {
+            0
+        };
+        match key {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.mode = Mode::PushMenu((current_sel + 1) % 4);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.mode = Mode::PushMenu(if current_sel == 0 { 3 } else { current_sel - 1 });
+            }
+            KeyCode::Enter => match current_sel {
+                0 => {
+                    self.ok("Pushing all to remote...");
+                    self.pending_git_sync = Some(GitSync::Push(PushTarget::All));
+                    self.mode = Mode::Normal;
+                }
+                1 => self.start_push_bookmark(),
+                2 => {
+                    let change_id = self.current_rev().map(|r| r.change_id.clone());
+                    if let Some(change_id) = change_id {
+                        self.ok(format!("Pushing change {}...", &change_id[..8]));
+                        self.pending_git_sync = Some(GitSync::Push(PushTarget::Change(change_id)));
+                        self.mode = Mode::Normal;
+                    }
+                }
+                3 => {
+                    let change_id = self.current_rev().map(|r| r.change_id.clone());
+                    if let Some(change_id) = change_id {
+                        self.ok(format!("Pushing revision {}...", &change_id[..8]));
+                        self.pending_git_sync =
+                            Some(GitSync::Push(PushTarget::Revision(change_id)));
+                        self.mode = Mode::Normal;
+                    }
+                }
+                _ => {}
+            },
+            KeyCode::Esc => self.mode = Mode::Normal,
+            _ => {}
+        }
+    }
+
+    fn start_push_bookmark(&mut self) {
+        let mut bookmarks: Vec<String> = self
+            .revisions
+            .iter()
+            .flat_map(|r| r.bookmarks.clone())
+            .filter(|b| !b.contains('@'))
+            .collect();
+        bookmarks.sort();
+        bookmarks.dedup();
+
+        if bookmarks.is_empty() {
+            self.err("No bookmarks found");
+            self.mode = Mode::Normal;
+            return;
+        }
+
+        let mut state = ListState::default();
+        state.select(Some(0));
+        self.mode = Mode::PushBookmarkList { state, bookmarks };
+    }
+
+    fn handle_push_bookmark_list(&mut self, key: KeyCode) {
+        if let Mode::PushBookmarkList {
+            ref mut state,
+            ref bookmarks,
+        } = self.mode
+        {
+            match key {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let i = state.selected().unwrap_or(0);
+                    state.select(Some((i + 1) % bookmarks.len()));
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    let i = state.selected().unwrap_or(0);
+                    state.select(Some(if i == 0 { bookmarks.len() - 1 } else { i - 1 }));
+                }
+                KeyCode::Enter => {
+                    if let Some(i) = state.selected() {
+                        let selected_bookmark = bookmarks[i].clone();
+                        self.ok(format!("Pushing bookmark {}...", selected_bookmark));
+                        self.pending_git_sync =
+                            Some(GitSync::Push(PushTarget::Bookmark(selected_bookmark)));
+                        self.mode = Mode::Normal;
+                    }
+                }
+                KeyCode::Esc => self.mode = Mode::Normal,
+                _ => {}
+            }
+        }
+    }
+
     fn handle_confirm(&mut self, key: KeyCode) {
         let action = if let Mode::Confirm(a) = &self.mode {
             Some(a.clone())
@@ -770,11 +885,10 @@ impl App {
             }
             "fetch" => {
                 self.ok("Fetching from remote...");
-                self.pending_git_sync = Some(true);
+                self.pending_git_sync = Some(GitSync::Fetch);
             }
             "push" => {
-                self.ok("Pushing to remote...");
-                self.pending_git_sync = Some(false);
+                self.mode = Mode::PushMenu(0);
             }
             "absorb" => {
                 self.ok("Absorbing changes...");
@@ -1094,21 +1208,27 @@ impl App {
         }
     }
 
-    pub fn git_sync(&mut self, fetch: bool) {
-        let res = if fetch {
-            crate::jj::git_fetch()
-        } else {
-            crate::jj::git_push()
+    pub fn git_sync(&mut self, sync: GitSync) {
+        let (res, success_msg): (anyhow::Result<String>, &str) = match sync {
+            GitSync::Fetch => (crate::jj::git_fetch(), "Git fetch completed"),
+            GitSync::Push(PushTarget::All) => (crate::jj::git_push(), "Git push all completed"),
+            GitSync::Push(PushTarget::Bookmark(b)) => (
+                crate::jj::git_push_bookmark(&b),
+                "Git push bookmark completed",
+            ),
+            GitSync::Push(PushTarget::Revision(r)) => (
+                crate::jj::git_push_revision(&r),
+                "Git push revision completed",
+            ),
+            GitSync::Push(PushTarget::Change(c)) => {
+                (crate::jj::git_push_change(&c), "Git push change completed")
+            }
         };
         match res {
             Ok(out) => {
                 self.command_output = Some(out);
                 self.refresh_log();
-                self.ok(if fetch {
-                    "Git fetch completed"
-                } else {
-                    "Git push completed"
-                });
+                self.ok(success_msg);
             }
             Err(e) => self.err(e.to_string()),
         }

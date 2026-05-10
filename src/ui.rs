@@ -102,6 +102,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 "Enter to confirm · Esc to cancel",
             )
         }
+        Mode::PushMenu(sel) => render_push_menu(f, &app.theme, *sel),
+        Mode::PushBookmarkList { state, bookmarks } => {
+            render_push_bookmark_list(f, &app.theme, state, bookmarks)
+        }
         Mode::Confirm(action) => render_confirm_overlay(f, &app.theme, action),
         _ => {}
     }
@@ -411,6 +415,8 @@ fn render_help_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::BookmarkMenu(_) => " [j/k] navigate  [Enter] choose  [Esc] cancel",
         Mode::BookmarkList { .. } => " [j/k] navigate  [Enter] select  [Esc] cancel",
         Mode::BookmarkPrompt { .. } => " [Enter] confirm  [Esc] cancel",
+        Mode::PushMenu(_) => " [j/k] navigate  [Enter] choose  [Esc] cancel",
+        Mode::PushBookmarkList { .. } => " [j/k] navigate  [Enter] select  [Esc] cancel",
         Mode::RebaseTarget => " [j/k] choose destination  [Enter] rebase here  [Esc] cancel",
         Mode::SquashTarget => " [j/k] choose target  [Enter] squash here  [Esc] cancel",
         Mode::Confirm(_) => " [y] confirm  [n/Esc] cancel",
@@ -525,6 +531,82 @@ fn render_bookmark_list(
 
     let block = Block::default()
         .title(title)
+        .title_bottom(Line::from(Span::styled(
+            " [j/k] navigate  [Enter] select  [Esc] cancel ",
+            Style::default().fg(t.immutable),
+        )))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_focused))
+        .style(Style::default().bg(t.bg));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let items: Vec<ListItem> = bookmarks
+        .iter()
+        .map(|b| ListItem::new(format!("  {b}")).style(Style::default().fg(t.desc)))
+        .collect();
+
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .bg(t.border_unfocused)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
+
+    f.render_stateful_widget(list, inner, state);
+}
+
+fn render_push_menu(f: &mut Frame, t: &Theme, selected: usize) {
+    let area = centered_rect(42, 10, f.area());
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .title(" Push Options ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_focused))
+        .style(Style::default().bg(t.bg));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let options = [
+        "Push All (--all)",
+        "Push Bookmark...",
+        "Push Change (-c)",
+        "Push Revision (-r)",
+    ];
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, &opt)| {
+            let style = if i == selected {
+                Style::default()
+                    .fg(t.selected)
+                    .bg(t.border_unfocused)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.desc)
+            };
+            ListItem::new(format!("  {opt}")).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
+}
+
+fn render_push_bookmark_list(
+    f: &mut Frame,
+    t: &Theme,
+    state: &mut ratatui::widgets::ListState,
+    bookmarks: &[String],
+) {
+    let area = centered_rect(50, 20, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Push Bookmark ")
         .title_bottom(Line::from(Span::styled(
             " [j/k] navigate  [Enter] select  [Esc] cancel ",
             Style::default().fg(t.immutable),

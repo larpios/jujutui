@@ -183,6 +183,44 @@ pub fn git_push() -> Result<String> {
     run_command("git push --all")
 }
 
+pub fn git_push_bookmark(bookmark: &str) -> Result<String> {
+    let out = Command::new("jj")
+        .args(["git", "push", "-b", bookmark])
+        .output()?;
+    format_command_output(out)
+}
+
+pub fn git_push_revision(revision: &str) -> Result<String> {
+    let out = Command::new("jj")
+        .args(["git", "push", "-r", revision])
+        .output()?;
+    format_command_output(out)
+}
+
+pub fn git_push_change(change_id: &str) -> Result<String> {
+    let out = Command::new("jj")
+        .args(["git", "push", "-c", change_id])
+        .output()?;
+    format_command_output(out)
+}
+
+fn format_command_output(out: Output) -> Result<String> {
+    let mut combined = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !stderr.is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str("-- STDERR --\n");
+        combined.push_str(&stderr);
+    }
+    if out.status.success() {
+        Ok(combined)
+    } else {
+        Err(anyhow::anyhow!("push failed: {}", combined))
+    }
+}
+
 #[allow(dead_code)]
 pub fn absorb(ignore_immutable: bool) -> Result<String> {
     let mut cmd = Command::new("jj");
@@ -295,6 +333,7 @@ pub fn bookmark_move(name: &str, revision: &str) -> Result<()> {
     )
 }
 
+/// Run a jj command and check that it succeeded
 fn check(out: Output, op: &str) -> Result<()> {
     if out.status.success() {
         Ok(())
