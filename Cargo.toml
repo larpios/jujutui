@@ -3,6 +3,10 @@ name = "jujutui"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "jjtui"
+path = "src/main.rs"
+
 [dependencies]
 ansi-to-tui = "8.0.1"
 anyhow = "1.0.102"
@@ -12,7 +16,10 @@ hashbrown = "0.17.0"
 ratatui = "0.30.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
+toml = { version = "0.8", default-features = false, features = [
+  "parse",
+  "display",
+] }
 tokio = { version = "1.52.2", features = ["full"] }
 
 [dev-dependencies]
