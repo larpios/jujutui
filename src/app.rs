@@ -114,6 +114,8 @@ pub struct App {
     pub config: Config,
     pub show_help: bool,
     pub pending_interactive_command: Option<Vec<String>>,
+    pub pending_git_sync: Option<bool>,
+    pub pending_absorb: bool,
     pub squash_source: Option<(Vec<String>, Vec<String>)>,
     #[cfg(test)]
     pub last_action: Option<PendingAction>,
@@ -154,6 +156,8 @@ impl App {
             config,
             show_help: false,
             pending_interactive_command: None,
+            pending_git_sync: None,
+            pending_absorb: false,
             squash_source: None,
             #[cfg(test)]
             last_action: None,
@@ -294,8 +298,14 @@ impl App {
                 self.mode = Mode::BookmarkMenu(0);
             }
             KeyCode::Char('T') => self.cycle_theme(),
-            KeyCode::Char('f') => self.git_sync(true),
-            KeyCode::Char('p') => self.git_sync(false),
+            KeyCode::Char('f') => {
+                self.ok("Fetching from remote...");
+                self.pending_git_sync = Some(true);
+            }
+            KeyCode::Char('p') => {
+                self.ok("Pushing to remote...");
+                self.pending_git_sync = Some(false);
+            }
             _ => {}
         }
     }
@@ -758,9 +768,18 @@ impl App {
                 self.refresh_log();
                 self.ok("Log refreshed");
             }
-            "fetch" => self.git_sync(true),
-            "push" => self.git_sync(false),
-            "absorb" => self.perform_or_confirm(PendingAction::Absorb),
+            "fetch" => {
+                self.ok("Fetching from remote...");
+                self.pending_git_sync = Some(true);
+            }
+            "push" => {
+                self.ok("Pushing to remote...");
+                self.pending_git_sync = Some(false);
+            }
+            "absorb" => {
+                self.ok("Absorbing changes...");
+                self.pending_absorb = true;
+            }
             "discard" => self.discard_files(),
             "split" => {
                 let id = self
@@ -903,7 +922,7 @@ impl App {
             .unwrap_or(false)
     }
 
-    fn execute_pending_action(&mut self, action: PendingAction, ignore_immutable: bool) {
+    pub fn execute_pending_action(&mut self, action: PendingAction, ignore_immutable: bool) {
         #[cfg(test)]
         {
             let _ = ignore_immutable;
@@ -1075,7 +1094,7 @@ impl App {
         }
     }
 
-    fn git_sync(&mut self, fetch: bool) {
+    pub fn git_sync(&mut self, fetch: bool) {
         let res = if fetch {
             crate::jj::git_fetch()
         } else {

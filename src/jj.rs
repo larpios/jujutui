@@ -180,7 +180,7 @@ pub fn git_fetch() -> Result<String> {
 }
 
 pub fn git_push() -> Result<String> {
-    run_command("git push")
+    run_command("git push --all")
 }
 
 #[allow(dead_code)]

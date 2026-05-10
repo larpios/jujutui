@@ -52,6 +52,17 @@ where
             break;
         }
 
+        if let Some(fetch) = app.pending_git_sync.take() {
+            app.git_sync(fetch);
+            continue;
+        }
+
+        if app.pending_absorb {
+            app.pending_absorb = false;
+            app.execute_pending_action(crate::app::PendingAction::Absorb, false);
+            continue;
+        }
+
         if let Some(args) = app.pending_interactive_command.take() {
             let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             disable_raw_mode()?;
