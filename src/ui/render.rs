@@ -1,4 +1,4 @@
-use crate::app::{App, Focus, Mode};
+use crate::app::{App, Focus, Mode, PushMenuEntry};
 use crate::theme::Theme;
 use ansi_to_tui::IntoText;
 use ratatui::{
@@ -303,7 +303,7 @@ pub(super) fn render_help_bar(f: &mut Frame, app: &App, area: Rect) {
         Mode::BookmarkMenu(_) => " [j/k] navigate  [Enter] choose  [Esc] cancel",
         Mode::BookmarkList { .. } => " [j/k] navigate  [Enter] select  [Esc] cancel",
         Mode::BookmarkPrompt { .. } => " [Enter] confirm  [Esc] cancel",
-        Mode::PushContextMenu(_, _) => " [j/k] navigate  [Enter] choose  [Esc] cancel",
+        Mode::PushContextMenu { .. } => " [j/k] navigate  [Enter] choose  [Esc] cancel",
         Mode::PushBookmarkList { .. } => " [j/k] navigate  [Enter] select  [Esc] cancel",
         Mode::RebaseTarget => " [j/k] choose destination  [Enter] rebase here  [Esc] cancel",
         Mode::SquashTarget => " [j/k] choose target  [Enter] squash here  [Esc] cancel",
@@ -373,7 +373,13 @@ pub(super) fn render_status_tab(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(list, area, &mut app.status_list_state);
 }
 
-pub(super) fn render_bookmark_menu(f: &mut Frame, t: &Theme, selected: usize) {
+pub(super) fn render_bookmark_menu(
+    f: &mut Frame,
+    t: &Theme,
+    selected: &crate::app::BookmarkMenuEntry,
+) {
+    use crate::app::BookmarkMenuEntry;
+
     let area = centered_rect(30, 8, f.area());
     f.render_widget(Clear, area);
     let block = Block::default()
@@ -385,12 +391,10 @@ pub(super) fn render_bookmark_menu(f: &mut Frame, t: &Theme, selected: usize) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let options = ["Move (Set)", "Create", "Rename", "Delete"];
-    let items: Vec<ListItem> = options
+    let items: Vec<ListItem> = BookmarkMenuEntry::ALL
         .iter()
-        .enumerate()
-        .map(|(i, &opt)| {
-            let style = if i == selected {
+        .map(|entry| {
+            let style = if entry == selected {
                 Style::default()
                     .fg(t.selected)
                     .bg(t.border_unfocused)
@@ -398,7 +402,7 @@ pub(super) fn render_bookmark_menu(f: &mut Frame, t: &Theme, selected: usize) {
             } else {
                 Style::default().fg(t.desc)
             };
-            ListItem::new(format!("  {opt}")).style(style)
+            ListItem::new(format!("  {}", entry.label())).style(style)
         })
         .collect();
 
@@ -450,14 +454,9 @@ pub(super) fn render_push_context_menu(
     f: &mut Frame,
     t: &Theme,
     selected: usize,
-    bookmarks: &[String],
+    entries: &[PushMenuEntry],
 ) {
-    let num_bookmarks = bookmarks.len();
-    let menu_len = if num_bookmarks == 1 {
-        2
-    } else {
-        num_bookmarks + 1
-    };
+    let menu_len = entries.len();
     let height = (menu_len + 2).min(20) as u16;
 
     let area = centered_rect(50, height, f.area());
@@ -471,21 +470,10 @@ pub(super) fn render_push_context_menu(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let mut options: Vec<String> = Vec::new();
-    if num_bookmarks == 1 {
-        options.push(format!("Push bookmark: {}", bookmarks[0]));
-        options.push("Push change (-c)".to_string());
-    } else {
-        for b in bookmarks {
-            options.push(format!("Push bookmark: {}", b));
-        }
-        options.push("Push change (-c)".to_string());
-    }
-
-    let items: Vec<ListItem> = options
+    let items: Vec<ListItem> = entries
         .iter()
         .enumerate()
-        .map(|(i, opt)| {
+        .map(|(i, entry)| {
             let style = if i == selected {
                 Style::default()
                     .fg(t.selected)
@@ -494,7 +482,7 @@ pub(super) fn render_push_context_menu(
             } else {
                 Style::default().fg(t.desc)
             };
-            ListItem::new(format!("  {opt}")).style(style)
+            ListItem::new(format!("  {}", entry.label())).style(style)
         })
         .collect();
 

@@ -4,6 +4,69 @@ use crate::theme::{Theme, ThemeKind};
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
 
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum BookmarkMenuEntry {
+    Move,
+    Create,
+    Rename,
+    Delete,
+}
+
+impl BookmarkMenuEntry {
+    pub const ALL: [Self; 4] = [Self::Move, Self::Create, Self::Rename, Self::Delete];
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Move => "Move (Set)",
+            Self::Create => "Create",
+            Self::Rename => "Rename",
+            Self::Delete => "Delete",
+        }
+    }
+
+    pub fn action(&self) -> BookmarkAction {
+        match self {
+            Self::Move => BookmarkAction::Move,
+            Self::Create => BookmarkAction::Create,
+            Self::Rename => BookmarkAction::Rename,
+            Self::Delete => BookmarkAction::Delete,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Move => Self::Create,
+            Self::Create => Self::Rename,
+            Self::Rename => Self::Delete,
+            Self::Delete => Self::Move,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Move => Self::Delete,
+            Self::Create => Self::Move,
+            Self::Rename => Self::Create,
+            Self::Delete => Self::Rename,
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Debug)]
+pub enum PushMenuEntry {
+    Bookmark(String),
+    PushChange,
+}
+
+impl PushMenuEntry {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Bookmark(b) => format!("Push bookmark: {b}"),
+            Self::PushChange => "Push change (-c)".to_string(),
+        }
+    }
+}
+
 #[derive(PartialEq, Clone)]
 pub enum Mode {
     Normal,
@@ -11,7 +74,7 @@ pub enum Mode {
     RebaseTarget,
     CommandPalette,
     SquashTarget,
-    BookmarkMenu(usize),
+    BookmarkMenu(BookmarkMenuEntry),
     BookmarkList {
         action: BookmarkAction,
         state: ListState,
@@ -22,7 +85,10 @@ pub enum Mode {
         input: String,
         target_bookmark: Option<String>,
     },
-    PushContextMenu(usize, Vec<String>),
+    PushContextMenu {
+        selected: usize,
+        entries: Vec<PushMenuEntry>,
+    },
     PushBookmarkList {
         global: bool,
         state: ListState,

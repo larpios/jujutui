@@ -73,7 +73,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             app.theme.border_focused,
             "Enter to confirm · Esc to cancel",
         ),
-        Mode::BookmarkMenu(sel) => render_bookmark_menu(f, &app.theme, *sel),
+        Mode::BookmarkMenu(sel) => render_bookmark_menu(f, &app.theme, sel),
         Mode::BookmarkList {
             action,
             state,
@@ -101,8 +101,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 "Enter to confirm · Esc to cancel",
             )
         }
-        Mode::PushContextMenu(sel, bookmarks) => {
-            render_push_context_menu(f, &app.theme, *sel, bookmarks)
+        Mode::PushContextMenu { selected, entries } => {
+            render_push_context_menu(f, &app.theme, *selected, entries)
         }
         Mode::PushBookmarkList {
             state, bookmarks, ..

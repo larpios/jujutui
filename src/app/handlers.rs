@@ -1,5 +1,8 @@
 use super::App;
-use crate::app::{ActiveTab, BookmarkAction, Focus, GitSync, Mode, PendingAction, PushTarget};
+use crate::app::{
+    ActiveTab, BookmarkAction, BookmarkMenuEntry, Focus, GitSync, Mode, PendingAction,
+    PushMenuEntry, PushTarget,
+};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::widgets::ListState;
 
@@ -35,7 +38,7 @@ impl App {
             Mode::BookmarkMenu(_) => self.handle_bookmark_menu(key),
             Mode::BookmarkList { .. } => self.handle_bookmark_list(key),
             Mode::BookmarkPrompt { .. } => self.handle_bookmark_prompt(key),
-            Mode::PushContextMenu(_, _) => self.handle_push_context_menu(key),
+            Mode::PushContextMenu { .. } => self.handle_push_context_menu(key),
             Mode::PushBookmarkList { .. } => self.handle_push_bookmark_list(key),
             Mode::Confirm(_) => self.handle_confirm(key),
         }
@@ -124,7 +127,7 @@ impl App {
                 self.ok("Log refreshed");
             }
             KeyCode::Char('b') => {
-                self.mode = Mode::BookmarkMenu(0);
+                self.mode = Mode::BookmarkMenu(BookmarkMenuEntry::Move);
             }
             KeyCode::Char('T') => self.cycle_theme(),
             KeyCode::Char('f') => {
@@ -373,27 +376,20 @@ impl App {
     }
 
     pub(super) fn handle_bookmark_menu(&mut self, key: KeyCode) {
-        let current_sel = if let Mode::BookmarkMenu(s) = self.mode {
+        let current = if let Mode::BookmarkMenu(s) = self.mode {
             s
         } else {
-            0
+            return;
         };
         match key {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.mode = Mode::BookmarkMenu((current_sel + 1) % 4);
+                self.mode = Mode::BookmarkMenu(current.next());
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.mode = Mode::BookmarkMenu(if current_sel == 0 { 3 } else { current_sel - 1 });
+                self.mode = Mode::BookmarkMenu(current.prev());
             }
             KeyCode::Enter => {
-                let action = match current_sel {
-                    0 => BookmarkAction::Move,
-                    1 => BookmarkAction::Create,
-                    2 => BookmarkAction::Rename,
-                    3 => BookmarkAction::Delete,
-                    _ => return,
-                };
-                self.start_bookmark_action(action);
+                self.start_bookmark_action(current.action());
             }
             KeyCode::Esc => self.mode = Mode::Normal,
             _ => {}
@@ -583,7 +579,15 @@ impl App {
             return;
         }
 
-        self.mode = Mode::PushContextMenu(0, bookmarks);
+        let entries: Vec<PushMenuEntry> = bookmarks
+            .into_iter()
+            .map(PushMenuEntry::Bookmark)
+            .chain(std::iter::once(PushMenuEntry::PushChange))
+            .collect();
+        self.mode = Mode::PushContextMenu {
+            selected: 0,
+            entries,
+        };
     }
 
     pub(super) fn start_push_bookmark_global(&mut self) {
@@ -611,74 +615,50 @@ impl App {
     }
 
     pub(super) fn handle_push_context_menu(&mut self, key: KeyCode) {
-        let (current_sel, bookmarks): (usize, Vec<String>) =
-            match std::mem::replace(&mut self.mode, Mode::Normal) {
-                Mode::PushContextMenu(s, b) => (s, b),
-                other => {
-                    self.mode = other;
-                    return;
-                }
-            };
-
-        let num_bookmarks = bookmarks.len();
-        let menu_len = if num_bookmarks == 1 {
-            2
-        } else {
-            num_bookmarks + 1
+        let (selected, entries) = match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::PushContextMenu { selected, entries } => (selected, entries),
+            other => {
+                self.mode = other;
+                return;
+            }
         };
+
+        let menu_len = entries.len();
 
         match key {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.mode = Mode::PushContextMenu((current_sel + 1) % menu_len, bookmarks);
+                self.mode = Mode::PushContextMenu {
+                    selected: (selected + 1) % menu_len,
+                    entries,
+                };
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.mode = Mode::PushContextMenu(
-                    if current_sel == 0 {
+                self.mode = Mode::PushContextMenu {
+                    selected: if selected == 0 {
                         menu_len - 1
                     } else {
-                        current_sel - 1
+                        selected - 1
                     },
-                    bookmarks,
-                );
+                    entries,
+                };
             }
             KeyCode::Enter => {
-                if num_bookmarks == 1 {
-                    match current_sel {
-                        0 => {
-                            let b = bookmarks[0].clone();
-                            self.ok(format!("Pushing bookmark {}...", b));
-                            self.pending_git_sync = Some(GitSync::Push(PushTarget::Bookmark(b)));
-                            self.mode = Mode::Normal;
-                        }
-                        1 => {
-                            let change_id = self
-                                .current_rev()
-                                .map(|r| r.change_id.clone())
-                                .unwrap_or_default();
-                            self.ok(format!("Pushing change {}...", &change_id[..8]));
-                            self.pending_git_sync =
-                                Some(GitSync::Push(PushTarget::Change(change_id)));
-                            self.mode = Mode::Normal;
-                        }
-                        _ => {}
-                    }
-                } else {
-                    if current_sel < num_bookmarks {
-                        let b = bookmarks[current_sel].clone();
+                match &entries[selected] {
+                    PushMenuEntry::Bookmark(b) => {
                         self.ok(format!("Pushing bookmark {}...", b));
-                        self.pending_git_sync = Some(GitSync::Push(PushTarget::Bookmark(b)));
-                        self.mode = Mode::Normal;
-                    } else if current_sel == num_bookmarks {
+                        self.pending_git_sync =
+                            Some(GitSync::Push(PushTarget::Bookmark(b.clone())));
+                    }
+                    PushMenuEntry::PushChange => {
                         let change_id = self
                             .current_rev()
                             .map(|r| r.change_id.clone())
                             .unwrap_or_default();
                         self.ok(format!("Pushing change {}...", &change_id[..8]));
-                        self.pending_git_sync =
-                            Some(GitSync::Push(PushTarget::Change(change_id)));
-                        self.mode = Mode::Normal;
+                        self.pending_git_sync = Some(GitSync::Push(PushTarget::Change(change_id)));
                     }
                 }
+                self.mode = Mode::Normal;
             }
             KeyCode::Esc => self.mode = Mode::Normal,
             _ => {}
