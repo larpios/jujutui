@@ -137,7 +137,7 @@ fn render_confirm_overlay(f: &mut Frame, t: &Theme, action: &crate::app::Pending
             Span::styled(
                 "immutable",
                 Style::default()
-                    .fg(t.immutable)
+                    .fg(t.immutable_icon)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" revision."),
@@ -717,7 +717,7 @@ fn revision_item<'a>(
             Style::default().fg(t.selected).add_modifier(Modifier::BOLD),
         )
     } else if rev.is_immutable {
-        ("◆", Style::default().fg(t.immutable))
+        ("◆", Style::default().fg(t.immutable_icon))
     } else if rev.is_empty {
         ("◦", Style::default().fg(t.empty))
     } else {
@@ -728,21 +728,13 @@ fn revision_item<'a>(
         t.rebase_src
     } else if is_selected {
         t.selected
-    } else if rev.is_immutable {
-        t.immutable
     } else {
         t.change_id
     };
 
-    let author_fg = if rev.is_immutable {
-        t.immutable
-    } else {
-        t.author
-    };
+    let author_fg = t.author;
 
-    let desc_fg = if rev.is_immutable {
-        t.immutable
-    } else if is_selected || is_rebase_src {
+    let desc_fg = if is_selected || is_rebase_src {
         t.selected
     } else if rev.is_empty {
         t.empty
